@@ -26,6 +26,16 @@ use crate::message::{LogIndex, RaftMessage, SendableRaftMessage, TermId};
 use crate::log::{CommittedIter, RaftLog};
 use rand_core::RngCore;
 
+use vstd::prelude::*;
+
+verus! {
+
+fn foo() {
+    assert(1 == 0 + 1);
+}
+
+} // verus!
+
 /// A Raft node, used for replicating a strongly-consistent distributed log of entries with arbitrary data amongst its
 /// peers.
 ///

@@ -19,10 +19,13 @@ bytes     = { version = "1.0", default-features = false, features = [] }
 log       = "0.4"
 prost     = { version = "0.7", default-features = false, features = ["prost-derive"], optional = true }
 rand_core = { version = "0.6", default-features = false, features = [] }
+verus_builtin_macros = { git = "https://github.com/verus-lang/verus.git" }
+verus_builtin = { git = "https://github.com/verus-lang/verus.git" }
+vstd = { git = "https://github.com/verus-lang/verus.git" }
 
 [dev-dependencies]
 derive_more = "0.99"
-env_logger  = { version = "0.8", default_features = false, features = [] }
+env_logger  = { version = "0.8", default-features = false, features = [] }
 itertools   = "0.10"
 rand        = "0.8"
 rand_chacha = "0.3"
@@ -34,3 +37,6 @@ test = true
 [[example]]
 name = "threaded"
 test = true
+
+[package.metadata.verus]
+verify = true
