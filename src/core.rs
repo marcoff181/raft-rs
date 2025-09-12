@@ -20,6 +20,8 @@
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use bytes::Bytes;
+use scapegoat::SgMap;
+use core::error::Error;
 use core::fmt;
 use core::iter;
 use crate::message::*;
@@ -30,7 +32,57 @@ use log::{error, warn, info, debug};
 use rand_core::RngCore;
 use self::LeadershipState::*;
 
+use vstd::prelude::*;
+use scapegoat::SgSet;
+
+verus!{
+
+// TODO: decide on reject_recursive_types vs accept_recursive_types
+
+#[verifier::external_type_specification]  
+#[verifier::external_body]  
+#[verifier::reject_recursive_types(NodeId)]
+pub struct ExSgSet<NodeId:Default+Ord,const N :usize>(SgSet<NodeId, N>);
+
+#[verifier::external_type_specification]  
+#[verifier::external_body]  
+#[verifier::reject_recursive_types(NodeId)]
+#[verifier::reject_recursive_types(V)]
+pub struct ExSgMap<NodeId:Default+Ord,V:Default,const N :usize>(SgMap<NodeId, V,N>);
+
+
+#[verifier::external_type_specification]  
+#[verifier::external_body]  
+pub struct ExRngCoreError(rand_core::Error);
+
+
+// this definitely needs a comment before I forget: telling verus about the external trait
+// `Default` remembering to specify the exact bounds both of the proxy (outside) and of the actual
+// Default, (the bounds are that Self is Sized)
+#[verifier::external_trait_specification]
+pub trait ExDefault  where Self: core::marker::Sized{
+    type ExternalTraitSpecificationFor: Default;
+    fn default() -> Self where Self: core::marker::Sized;
+}
+
+#[verifier::external_trait_specification]
+pub trait ExRngCore {
+    type ExternalTraitSpecificationFor: rand_core::RngCore;
+
+    fn next_u32(&mut self) -> u32; 
+
+    fn next_u64(&mut self) -> u64; 
+
+    fn fill_bytes(&mut self, dest: &mut [u8]); 
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error>; 
+
+}
+
+
+
 /// The state of Raft log replication from a Raft node to one of its peers.
+#[derive(Default)]
 pub struct ReplicationState {
     // \* The next entry to send to each follower.
     // VARIABLE nextIndex
@@ -55,7 +107,8 @@ pub struct ReplicationState {
 
 // \* Server states.
 // CONSTANTS Follower, Candidate, Leader
-enum LeadershipState<NodeId> {
+#[verifier::reject_recursive_types(NodeId)]
+enum LeadershipState<NodeId:Default+Ord> {
     Follower(FollowerState<NodeId>),
     Candidate(CandidateState<NodeId>),
     Leader(LeaderState<NodeId>),
@@ -68,25 +121,29 @@ struct FollowerState<NodeId> {
     random_election_ticks: u32,
 }
 
-struct CandidateState<NodeId> {
+#[verifier::reject_recursive_types(NodeId)]
+struct CandidateState<NodeId:Default+Ord> {
     // \* The latest entry that each follower has acknowledged is the same as the
     // \* leader's. This is used to calculate commitIndex on the leader.
     // VARIABLE votesGranted
-    votes_granted: BTreeSet<NodeId>,
+    votes_granted: SgSet<NodeId,{usize::MAX}>,
 
     election_ticks: u32,
 }
 
-struct LeaderState<NodeId> {
-    followers: BTreeMap<NodeId, ReplicationState>,
+#[verifier::reject_recursive_types(NodeId)]
+struct LeaderState<NodeId:Default+Ord> {
+    followers: SgMap<NodeId, ReplicationState, {usize::MAX}>,
 
     heartbeat_ticks: u32,
 }
 
 /// The complete state of a Raft node.
-pub struct RaftState<Log, Random, NodeId> {
+#[verifier::reject_recursive_types(NodeId)]
+#[verifier::reject_recursive_types(Log)]
+pub struct RaftState<Log, Random, NodeId : Ord+Default> {
     node_id: NodeId,
-    peers:   BTreeSet<NodeId>,
+    peers: SgSet<NodeId,{usize::MAX}>, 
     random:  Random,
     config:  RaftConfig,
 
@@ -112,14 +169,17 @@ pub struct RaftState<Log, Random, NodeId> {
     log: RaftLogState<Log>,
 }
 
+
+}
+
 #[allow(missing_docs)]
-impl<Log, Random, NodeId> RaftState<Log, Random, NodeId>
+impl<Log, Random, NodeId : Ord+Default> RaftState<Log, Random, NodeId>
 where Log: RaftLog,
       Random: RngCore,
       NodeId: Ord + Clone + fmt::Display,
 {
     pub fn new(node_id:    NodeId,
-               mut peers:  BTreeSet<NodeId>,
+               mut peers:  SgSet<NodeId,{usize::MAX}>,
                log:        Log,
                mut random: Random,
                config:     RaftConfig)
@@ -179,7 +239,7 @@ where Log: RaftLog,
         &self.node_id
     }
 
-    pub fn peers(&self) -> &BTreeSet<NodeId> {
+    pub fn peers(&self) -> &SgSet<NodeId,{usize::MAX}> {
         &self.peers
     }
 
@@ -508,6 +568,8 @@ where Log: RaftLog,
 
     // \* Server i receives a RequestVote request from server j with
     // \* m.mterm <= currentTerm[i].
+    verus!{
+
     fn handle_vote_request(&mut self,
                            msg_term: TermId,
                            msg:      VoteRequest,
@@ -522,31 +584,33 @@ where Log: RaftLog,
         let grant =                                                             // LET grant ==
             msg_term == self.current_term &&                                    //     /\ m.mterm = currentTerm[i]
             log_ok &&                                                           //     /\ logOk
-            self.voted_for.as_ref().map(|vote| &from == vote).unwrap_or(true);  //     /\ votedFor[i] \in {Nil, j}
-        assert!(msg_term <= self.current_term);                                 // IN /\ m.mterm <= currentTerm[i]
+            self.voted_for.as_ref().map(|vote| from.eq(vote)).unwrap_or(true);  //     /\ votedFor[i] \in {Nil, j}
+        // assert(msg_term <= self.current_term);                                 // IN /\ m.mterm <= currentTerm[i]
         if grant {
             self.voted_for = Some(from.clone());                                //    /\ \/ grant  /\ votedFor' = [votedFor EXCEPT ![i] = j]
         }                                                                       //       \/ ~grant /\ UNCHANGED votedFor
 
         if grant {
-            info!("granted vote at {} with {} at {} for node {} with {} at {}",
-                  &self.current_term, &last_log_idx, &last_log_term,
-                  &from, &msg.last_log_idx, &msg.last_log_term);
-            match &mut self.leadership {
-                Follower(FollowerState { election_ticks, random_election_ticks, .. }) =>
-                    *election_ticks = *random_election_ticks,
-                Candidate(_) | Leader(_) => (),
-            }
+
+            // info!("granted vote at {} with {} at {} for node {} with {} at {}",
+            //       &self.current_term, &last_log_idx, &last_log_term,
+            //       &from, &msg.last_log_idx, &msg.last_log_term);
+            
+            // match &mut self.leadership {
+            //     Follower(FollowerState { election_ticks, random_election_ticks, .. }) =>
+            //         *election_ticks = *random_election_ticks,
+            //     Candidate(_) | Leader(_) => (),
+            // }
         } else if msg_term != self.current_term {
-            info!("ignored message with {} < current {}: {}",
-                  &msg_term, &self.current_term, &msg);
+            // info!("ignored message with {} < current {}: {}",
+            //       &msg_term, &self.current_term, &msg);
         } else if let Some(vote) = &self.voted_for {
-            info!("rejected vote at {} for node {} as already voted for {}",
-                  &self.current_term, &from, vote);
+            // info!("rejected vote at {} for node {} as already voted for {}",
+            //       &self.current_term, &from, vote);
         } else {
-            info!("rejected vote at {} with {} at {} for node {} with {} at {}",
-                  &self.current_term, &last_log_idx, &last_log_term,
-                  &from, &msg.last_log_idx, &msg.last_log_term);
+            // info!("rejected vote at {} with {} at {} for node {} with {} at {}",
+            //       &self.current_term, &last_log_idx, &last_log_term,
+            //       &from, &msg.last_log_idx, &msg.last_log_term);
         }
 
         let message = RaftMessage {                                // /\ Reply([
@@ -556,7 +620,7 @@ where Log: RaftLog,
             })),
         };
         Some(SendableRaftMessage { message, dest: RaftMessageDestination::To(from) })
-    }
+    }}
 
     // \* Server i receives a RequestVote response from server j with
     // \* m.mterm = currentTerm[i].

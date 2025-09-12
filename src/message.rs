@@ -27,6 +27,19 @@ use core::fmt;
 use core::ops::{Add, AddAssign, Sub};
 use crate::prelude::*;
 
+use vstd::prelude::*;
+
+
+verus!{
+
+pub assume_specification [<Bytes as Clone>::clone](b: &Bytes) -> (res: Bytes)
+    ensures res == b;
+
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExBytes(bytes::Bytes);
+
+
 /// A [`RaftMessage`] to be sent to a destination.
 pub struct SendableRaftMessage<NodeId> {
     /// The message to be sent.
@@ -35,6 +48,7 @@ pub struct SendableRaftMessage<NodeId> {
     /// The destination for the message.
     pub dest: RaftMessageDestination<NodeId>,
 }
+
 
 /// The destination for a [`SendableRaftMessage`].
 pub enum RaftMessageDestination<NodeId> {
@@ -106,6 +120,8 @@ pub struct VoteResponse {
     pub vote_granted: bool,
 }
 
+
+
 /// A request to append entries to a Raft node's log.
 #[derive(Clone, PartialEq)]
 #[cfg_attr(feature = "prost", derive(prost::Message))]
@@ -128,6 +144,8 @@ pub struct AppendRequest {
     pub entries: Vec<LogEntry>,
 }
 
+
+
 /// The response to an [`AppendRequest`] allowing or denying an append to the Raft node's log.
 #[derive(Clone, PartialEq)]
 #[cfg_attr(feature = "prost", derive(prost::Message))]
@@ -146,6 +164,7 @@ pub struct AppendResponse {
     pub last_log_idx: LogIndex,
 }
 
+
 /// An entry in a [Raft log][crate::log::RaftLog].
 #[derive(Clone, PartialEq)]
 #[cfg_attr(feature = "prost", derive(prost::Message))]
@@ -160,8 +179,9 @@ pub struct LogEntry {
     pub data: Bytes,
 }
 
+
 /// The unique, monotonically-increasing ID for a term of Raft group leadership.
-#[derive(Clone, PartialEq)]
+#[derive(Clone,PartialEq,Structural)]
 #[cfg_attr(feature = "prost", derive(prost::Message))]
 #[cfg_attr(not(feature = "prost"), derive(Debug, Default))]
 pub struct TermId {
@@ -169,6 +189,16 @@ pub struct TermId {
     #[cfg_attr(feature = "prost", prost(uint64, required, tag="1"))]
     pub id: u64,
 }
+
+// impl PartialEq for TermId {  
+//     fn eq(&self, other: &Self) -> (ret:bool) 
+//         ensures 
+//             ret == (self.id == other.id)
+//     {  
+//         self.id.eq(&other.id)   
+//     }  
+// }  
+
 
 /// A 1-based index into a [Raft log][crate::log::RaftLog].
 #[derive(Clone, PartialEq)]
@@ -179,7 +209,7 @@ pub struct LogIndex {
     #[cfg_attr(feature = "prost", prost(uint64, required, tag="1"))]
     pub id: u64,
 }
-
+}
 //
 // RaftMessage impls
 //

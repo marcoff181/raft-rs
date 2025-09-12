@@ -13,6 +13,7 @@ exclude = [".github/"]
 
 [features]
 default = ["prost"]
+test = []
 
 [dependencies]
 bytes     = { version = "1.0", default-features = false, features = [] }
@@ -22,6 +23,7 @@ rand_core = { version = "0.6", default-features = false, features = [] }
 verus_builtin_macros = { git = "https://github.com/verus-lang/verus.git" }
 verus_builtin = { git = "https://github.com/verus-lang/verus.git" }
 vstd = { git = "https://github.com/verus-lang/verus.git" }
+scapegoat = "2.3.0"
 
 [dev-dependencies]
 derive_more = "0.99"

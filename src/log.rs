@@ -30,6 +30,8 @@ pub mod mem;
 use core::iter;
 use crate::message::{LogEntry, LogIndex, TermId};
 
+use vstd::prelude::*;
+verus!{
 /// An interface for storage of the Raft log of a [`RaftNode`](crate::node::RaftNode).
 ///
 /// # Initial state
@@ -114,6 +116,10 @@ pub trait RaftLog {
     fn take_next(&mut self) -> Option<LogEntry>;
 }
 
+}
+
+#[verifier::external_body]
+#[verifier::reject_recursive_types(Log)]
 pub(crate) struct RaftLogState<Log> {
     log: Log,
     pub commit_idx: LogIndex,
@@ -174,10 +180,12 @@ impl<Log: RaftLog> RaftLogState<Log> {
         self.log.get_len(index)
     }
 
+    #[verifier::external_body]
     pub fn last_index(&self) -> LogIndex {
         self.log.last_index()
     }
 
+    #[verifier::external_body]
     pub fn last_term(&self) -> TermId {
         self.log.last_term()
     }

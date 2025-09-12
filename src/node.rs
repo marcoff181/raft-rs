@@ -27,14 +27,10 @@ use crate::log::{CommittedIter, RaftLog};
 use rand_core::RngCore;
 
 use vstd::prelude::*;
+use scapegoat::SgSet;
+use core::default::Default;
 
 verus! {
-
-fn foo() {
-    assert(1 == 0 + 1);
-}
-
-} // verus!
 
 /// A Raft node, used for replicating a strongly-consistent distributed log of entries with arbitrary data amongst its
 /// peers.
@@ -79,7 +75,9 @@ fn foo() {
 /// [`SendableRaftMessage`]: crate::message::SendableRaftMessage
 /// [`take_committed`]: Self::take_committed
 /// [`timer_tick`]: Self::timer_tick
-pub struct RaftNode<Log, Random, NodeId> {
+#[verifier::reject_recursive_types(Log)]
+#[verifier::reject_recursive_types(NodeId)]
+pub struct RaftNode<Log, Random, NodeId : Ord+Default> {
     state: RaftState<Log, Random, NodeId>,
 }
 
@@ -95,6 +93,7 @@ pub struct RaftConfig {
     /// The maximum number of bytes to replicate to a peer at a time.
     pub replication_chunk_size: usize,
 }
+ }
 
 /// An error returned while attempting to append to a Raft log.
 pub enum AppendError<E> {
@@ -107,7 +106,7 @@ pub enum AppendError<E> {
     RaftLogErr(E),
 }
 
-impl<Log, Random, NodeId> RaftNode<Log, Random, NodeId>
+impl<Log, Random, NodeId : Ord+Default> RaftNode<Log, Random, NodeId>
 where Log: RaftLog,
       Random: RngCore,
       NodeId: Ord + Clone + Display,
@@ -119,7 +118,7 @@ where Log: RaftLog,
     /// contain `node_id` or omit it to the same effect. `rand` must produce different values on every node in a group.
     pub fn new(
         node_id: NodeId,
-        peers:   BTreeSet<NodeId>,
+        peers:   SgSet<NodeId,{usize::MAX}>,
         log:     Log,
         random:  Random,
         config:  RaftConfig,
@@ -192,7 +191,7 @@ where Log: RaftLog,
     }
 
     /// Returns the IDs of this node's peers.
-    pub fn peers(&self) -> &BTreeSet<NodeId> {
+    pub fn peers(&self) -> &SgSet<NodeId,{usize::MAX}> {
         self.state.peers()
     }
 
