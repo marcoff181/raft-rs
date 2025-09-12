@@ -55,7 +55,6 @@ pub struct ExSgMap<NodeId:Default+Ord,V:Default,const N :usize>(SgMap<NodeId, V,
 #[verifier::external_body]  
 pub struct ExRngCoreError(rand_core::Error);
 
-
 // this definitely needs a comment before I forget: telling verus about the external trait
 // `Default` remembering to specify the exact bounds both of the proxy (outside) and of the actual
 // Default, (the bounds are that Self is Sized)
@@ -566,45 +565,56 @@ where Log: RaftLog,
     // \* i = recipient, j = sender, m = message
     //
 
+    verus!{
+    
+    // TODO: move to nicer spot
+    #[verifier::external_body]
+    fn update_ticks_if_follower(&mut self){
+        match &mut self.leadership {
+            Follower(FollowerState { election_ticks, random_election_ticks, .. }) =>
+                *election_ticks = *random_election_ticks,
+            Candidate(_) | Leader(_) => (),
+        }
+    }
+
+
     // \* Server i receives a RequestVote request from server j with
     // \* m.mterm <= currentTerm[i].
-    verus!{
-
     fn handle_vote_request(&mut self,
                            msg_term: TermId,
                            msg:      VoteRequest,
                            from:     NodeId)
                            -> (res:Option<SendableRaftMessage<NodeId>>) 
-                    ensures({
-                        let last_log_idx  = self.log.last_index();
-                        let last_log_term = self.log.last_term();
-                        // have to use .id because of trouble with the Comp trait
-                        let log_ok = (msg.last_log_term.id >  last_log_term.id) ||
-                                     (msg.last_log_term == last_log_term &&                         
-                                      msg.last_log_idx.id  >= last_log_idx.id); 
-                        let grant =                                                             
-                            msg_term == self.current_term &&                                    
-                            log_ok &&                                                           
-                            (self.voted_for== None::<NodeId>||self.voted_for == Some(from));  
+        ensures({
+            let last_log_idx  = self.log.last_index();
+            let last_log_term = self.log.last_term();
+            // have to use .id because of trouble with the Comp trait
+            let log_ok = (msg.last_log_term.id >  last_log_term.id) ||
+                         (msg.last_log_term == last_log_term &&                         
+                          msg.last_log_idx.id  >= last_log_idx.id); 
+            let grant =                                                             
+                msg_term == self.current_term &&                                    
+                log_ok &&                                                           
+                (self.voted_for== None::<NodeId>||self.voted_for == Some(from));  
 
-                        // cannot prove that this does not happen as in the TLA spec but we can
-                        // confirm that we do not send any response (in the original code it
-                        // panicked)
-                        ||| (msg_term.id <= self.current_term.id) ==> (res == None::<SendableRaftMessage<NodeId>>)
-                        ||| ((grant && self.voted_for == Some(from))
-                                ||  (!grant && *self == *old(self)))
-                            &&
-                            res == Some(
-                                SendableRaftMessage::<NodeId>{
-                                    message:RaftMessage{
-                                        term:self.current_term, 
-                                        rpc:Some(Rpc::VoteResponse(VoteResponse {vote_granted: grant,}))
-                                    }, 
-                                    dest:RaftMessageDestination::<NodeId>::To(from)
-                                }
-                            )
-                        }) 
-                            {             
+                // cannot prove that this does not happen as in the TLA spec but we can
+                // confirm that we do not send any response (in the original code it
+                // panicked)
+            ||| (msg_term.id <= self.current_term.id) ==> (res == None::<SendableRaftMessage<NodeId>>)
+            ||| ((grant && self.voted_for == Some(from))
+                    ||  (!grant && *self == *old(self)))
+                &&
+                res == Some(
+                    SendableRaftMessage::<NodeId>{
+                        message:RaftMessage{
+                            term:self.current_term, 
+                            rpc:Some(Rpc::VoteResponse(VoteResponse {vote_granted: grant,}))
+                        }, 
+                        dest:RaftMessageDestination::<NodeId>::To(from)
+                    }
+                )
+            }) 
+    {             
         let last_log_idx  = self.log.last_index();
         let last_log_term = self.log.last_term();
         let log_ok =                                                            // LET logOk ==
@@ -617,7 +627,7 @@ where Log: RaftLog,
             self.voted_for.as_ref().map(|vote| from.eq(vote)).unwrap_or(true);  //     /\ votedFor[i] \in {Nil, j}
 
         if(msg_term.id <= self.current_term.id){
-            return None::<SendableRaftMessage<NodeId>>
+            return None
         };                                 // IN /\ m.mterm <= currentTerm[i]
                                            
         if grant {
@@ -625,26 +635,32 @@ where Log: RaftLog,
         }                                                                       //       \/ ~grant /\ UNCHANGED votedFor
 
         if grant {
-
-            // info!("granted vote at {} with {} at {} for node {} with {} at {}",
-            //       &self.current_term, &last_log_idx, &last_log_term,
-            //       &from, &msg.last_log_idx, &msg.last_log_term);
+            #[cfg(not(verus_keep_ghost))]  
+            info!("granted vote at {} with {} at {} for node {} with {} at {}",
+                  &self.current_term, &last_log_idx, &last_log_term,
+                  &from, &msg.last_log_idx, &msg.last_log_term);
             
             // match &mut self.leadership {
             //     Follower(FollowerState { election_ticks, random_election_ticks, .. }) =>
             //         *election_ticks = *random_election_ticks,
             //     Candidate(_) | Leader(_) => (),
             // }
+            // Converted to --v
+            self.update_ticks_if_follower();
+
         } else if msg_term != self.current_term {
-            // info!("ignored message with {} < current {}: {}",
-            //       &msg_term, &self.current_term, &msg);
+            #[cfg(not(verus_keep_ghost))]  
+            info!("ignored message with {} < current {}: {}",
+                  &msg_term, &self.current_term, &msg);
         } else if let Some(vote) = &self.voted_for {
-            // info!("rejected vote at {} for node {} as already voted for {}",
-            //       &self.current_term, &from, vote);
+            #[cfg(not(verus_keep_ghost))]  
+            info!("rejected vote at {} for node {} as already voted for {}",
+                  &self.current_term, &from, vote);
         } else {
-            // info!("rejected vote at {} with {} at {} for node {} with {} at {}",
-            //       &self.current_term, &last_log_idx, &last_log_term,
-            //       &from, &msg.last_log_idx, &msg.last_log_term);
+            #[cfg(not(verus_keep_ghost))]  
+            info!("rejected vote at {} with {} at {} for node {} with {} at {}",
+                  &self.current_term, &last_log_idx, &last_log_term,
+                  &from, &msg.last_log_idx, &msg.last_log_term);
         }
 
         let message = RaftMessage {                                // /\ Reply([
