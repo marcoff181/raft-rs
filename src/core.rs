@@ -34,6 +34,7 @@ use self::LeadershipState::*;
 
 use vstd::prelude::*;
 use scapegoat::SgSet;
+use core::mem;
 
 verus!{
 
@@ -54,6 +55,10 @@ pub struct ExSgMap<NodeId:Default+Ord,V:Default,const N :usize>(SgMap<NodeId, V,
 #[verifier::external_type_specification]  
 #[verifier::external_body]  
 pub struct ExRngCoreError(rand_core::Error);
+
+// verus does not recognize the Defautl implementations otherwise
+pub assume_specification<T:Ord+Default+Clone,const N : usize>[ SgSet::clone ](ciao: &SgSet<T,N>) -> (SgSet<T,N>);
+pub assume_specification<T:Ord+Default+Clone,V:Default+Clone,const N : usize>[ SgMap::clone ](ciao: &SgMap<T,V,N>) -> (SgMap<T,V,N>);
 
 // this definitely needs a comment before I forget: telling verus about the external trait
 // `Default` remembering to specify the exact bounds both of the proxy (outside) and of the actual
@@ -81,7 +86,7 @@ pub trait ExRngCore {
 
 
 /// The state of Raft log replication from a Raft node to one of its peers.
-#[derive(Default)]
+#[derive(Default,Clone)]
 pub struct ReplicationState {
     // \* The next entry to send to each follower.
     // VARIABLE nextIndex
@@ -107,12 +112,14 @@ pub struct ReplicationState {
 // \* Server states.
 // CONSTANTS Follower, Candidate, Leader
 #[verifier::reject_recursive_types(NodeId)]
+#[derive(Clone)]
 enum LeadershipState<NodeId:Default+Ord> {
     Follower(FollowerState<NodeId>),
     Candidate(CandidateState<NodeId>),
     Leader(LeaderState<NodeId>),
 }
 
+#[derive(Clone)]
 struct FollowerState<NodeId> {
     leader: Option<NodeId>,
 
@@ -120,6 +127,7 @@ struct FollowerState<NodeId> {
     random_election_ticks: u32,
 }
 
+#[derive(Clone)]
 #[verifier::reject_recursive_types(NodeId)]
 struct CandidateState<NodeId:Default+Ord> {
     // \* The latest entry that each follower has acknowledged is the same as the
@@ -130,6 +138,7 @@ struct CandidateState<NodeId:Default+Ord> {
     election_ticks: u32,
 }
 
+#[derive(Clone)]
 #[verifier::reject_recursive_types(NodeId)]
 struct LeaderState<NodeId:Default+Ord> {
     followers: SgMap<NodeId, ReplicationState, {usize::MAX}>,
@@ -640,13 +649,13 @@ where Log: RaftLog,
                   &self.current_term, &last_log_idx, &last_log_term,
                   &from, &msg.last_log_idx, &msg.last_log_term);
             
-            // match &mut self.leadership {
-            //     Follower(FollowerState { election_ticks, random_election_ticks, .. }) =>
-            //         *election_ticks = *random_election_ticks,
-            //     Candidate(_) | Leader(_) => (),
-            // }
-            // Converted to --v
-            self.update_ticks_if_follower();
+
+            // modified because of &mut ref restrictions
+            self.leadership = match self.leadership.clone() {
+                Follower(FollowerState {leader, election_ticks , random_election_ticks}) =>
+                    Follower(FollowerState{leader,election_ticks:random_election_ticks,random_election_ticks}),
+                leadership =>  leadership,
+            };
 
         } else if msg_term != self.current_term {
             #[cfg(not(verus_keep_ghost))]  
