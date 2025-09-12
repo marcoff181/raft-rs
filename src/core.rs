@@ -574,7 +574,37 @@ where Log: RaftLog,
                            msg_term: TermId,
                            msg:      VoteRequest,
                            from:     NodeId)
-                           -> Option<SendableRaftMessage<NodeId>> {             // HandleRequestVoteRequest(i, j, m) ==
+                           -> (res:Option<SendableRaftMessage<NodeId>>) 
+                    ensures({
+                        let last_log_idx  = self.log.last_index();
+                        let last_log_term = self.log.last_term();
+                        // have to use .id because of trouble with the Comp trait
+                        let log_ok = (msg.last_log_term.id >  last_log_term.id) ||
+                                     (msg.last_log_term == last_log_term &&                         
+                                      msg.last_log_idx.id  >= last_log_idx.id); 
+                        let grant =                                                             
+                            msg_term == self.current_term &&                                    
+                            log_ok &&                                                           
+                            (self.voted_for== None::<NodeId>||self.voted_for == Some(from));  
+
+                        // cannot prove that this does not happen as in the TLA spec but we can
+                        // confirm that we do not send any response (in the original code it
+                        // panicked)
+                        ||| (msg_term.id <= self.current_term.id) ==> (res == None::<SendableRaftMessage<NodeId>>)
+                        ||| ((grant && self.voted_for == Some(from))
+                                ||  (!grant && *self == *old(self)))
+                            &&
+                            res == Some(
+                                SendableRaftMessage::<NodeId>{
+                                    message:RaftMessage{
+                                        term:self.current_term, 
+                                        rpc:Some(Rpc::VoteResponse(VoteResponse {vote_granted: grant,}))
+                                    }, 
+                                    dest:RaftMessageDestination::<NodeId>::To(from)
+                                }
+                            )
+                        }) 
+                            {             
         let last_log_idx  = self.log.last_index();
         let last_log_term = self.log.last_term();
         let log_ok =                                                            // LET logOk ==
@@ -585,7 +615,11 @@ where Log: RaftLog,
             msg_term == self.current_term &&                                    //     /\ m.mterm = currentTerm[i]
             log_ok &&                                                           //     /\ logOk
             self.voted_for.as_ref().map(|vote| from.eq(vote)).unwrap_or(true);  //     /\ votedFor[i] \in {Nil, j}
-        // assert(msg_term <= self.current_term);                                 // IN /\ m.mterm <= currentTerm[i]
+
+        if(msg_term.id <= self.current_term.id){
+            return None::<SendableRaftMessage<NodeId>>
+        };                                 // IN /\ m.mterm <= currentTerm[i]
+                                           
         if grant {
             self.voted_for = Some(from.clone());                                //    /\ \/ grant  /\ votedFor' = [votedFor EXCEPT ![i] = j]
         }                                                                       //       \/ ~grant /\ UNCHANGED votedFor
@@ -620,7 +654,8 @@ where Log: RaftLog,
             })),
         };
         Some(SendableRaftMessage { message, dest: RaftMessageDestination::To(from) })
-    }}
+    }
+}
 
     // \* Server i receives a RequestVote response from server j with
     // \* m.mterm = currentTerm[i].

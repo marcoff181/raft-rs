@@ -181,7 +181,7 @@ pub struct LogEntry {
 
 
 /// The unique, monotonically-increasing ID for a term of Raft group leadership.
-#[derive(Clone,PartialEq,Structural)]
+#[derive(Clone,PartialEq,Eq,PartialOrd,Ord,Structural)]
 #[cfg_attr(feature = "prost", derive(prost::Message))]
 #[cfg_attr(not(feature = "prost"), derive(Debug, Default))]
 pub struct TermId {
@@ -189,16 +189,6 @@ pub struct TermId {
     #[cfg_attr(feature = "prost", prost(uint64, required, tag="1"))]
     pub id: u64,
 }
-
-// impl PartialEq for TermId {  
-//     fn eq(&self, other: &Self) -> (ret:bool) 
-//         ensures 
-//             ret == (self.id == other.id)
-//     {  
-//         self.id.eq(&other.id)   
-//     }  
-// }  
-
 
 /// A 1-based index into a [Raft log][crate::log::RaftLog].
 #[derive(Clone, PartialEq)]
@@ -315,18 +305,44 @@ impl fmt::Display for TermId {
     }
 }
 
+
+verus!{
+
+
 impl Copy for TermId {}
-impl Eq for TermId {}
-impl PartialOrd for TermId {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+
+// TODO: not working yet
+impl SpecOrd<TermId> for TermId {  
+    fn spec_lt(self, rhs: TermId) -> bool{
+        self.id.spec_lt(rhs.id)
+    }
+    fn spec_le(self, rhs: TermId) -> bool{
+        self.id.spec_le(rhs.id)
+    }
+    fn spec_gt(self, rhs: TermId) -> bool{
+        self.id.spec_gt(rhs.id)
+    }
+    fn spec_ge(self, rhs: TermId) -> bool{
+        self.id.spec_ge(rhs.id)
+    }
 }
-impl Ord for TermId {
-    fn cmp(&self, other: &Self) -> Ordering { self.id.cmp(&other.id) }
-}
+
+// impl Eq for TermId {}
+// impl PartialOrd for TermId {
+//     fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+// }
+// impl Ord for TermId {
+//     fn cmp(&self, other: &Self) -> Ordering { self.id.cmp(&other.id) }
+// }
+
+
 impl AddAssign<u64> for TermId {
     fn add_assign(&mut self, rhs: u64)  {
-        self.id = self.id.checked_add(rhs).unwrap_or_else(|| panic!("overflow"));
+        // TODO: decide standard
+        self.id = self.id.checked_add(rhs).unwrap_or(u64::MAX);
     }
+}
+
 }
 
 //

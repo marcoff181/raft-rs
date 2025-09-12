@@ -22,6 +22,8 @@ use core::convert::{TryFrom, TryInto};
 use crate::message::{LogEntry, LogIndex, TermId};
 use super::RaftLog;
 
+use vstd::prelude::*;
+
 /// A naive in-memory implementation of [`RaftLog`](super::RaftLog), primarily for testing.
 pub struct RaftLogMemory {
     entries:       VecDeque<LogEntry>,

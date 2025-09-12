@@ -116,13 +116,14 @@ pub trait RaftLog {
     fn take_next(&mut self) -> Option<LogEntry>;
 }
 
-}
 
-#[verifier::external_body]
+
+
 #[verifier::reject_recursive_types(Log)]
 pub(crate) struct RaftLogState<Log> {
     log: Log,
     pub commit_idx: LogIndex,
+}
 }
 
 /// An iterator yielding committed [log entries][`LogEntry`].
@@ -180,14 +181,20 @@ impl<Log: RaftLog> RaftLogState<Log> {
         self.log.get_len(index)
     }
 
-    #[verifier::external_body]
+    verus!{
+    pub uninterp spec fn spec_last_index(&self) -> LogIndex ;
+
+    #[verifier::when_used_as_spec(spec_last_index)]
     pub fn last_index(&self) -> LogIndex {
         self.log.last_index()
     }
 
-    #[verifier::external_body]
+    pub uninterp spec fn spec_last_term(&self) -> TermId ;
+
+    #[verifier::when_used_as_spec(spec_last_term)]
     pub fn last_term(&self) -> TermId {
         self.log.last_term()
+    }
     }
 
     pub fn log(&self) -> &Log {
