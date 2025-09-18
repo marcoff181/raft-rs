@@ -21,6 +21,7 @@ log       = "0.4"
 prost     = { version = "0.7", default-features = false, features = ["prost-derive"], optional = true }
 rand_core = { version = "0.6", default-features = false, features = [] }
 verus_builtin_macros = { git = "https://github.com/verus-lang/verus.git" }
+verus_state_machines_macros = { git = "https://github.com/verus-lang/verus.git" }
 verus_builtin = { git = "https://github.com/verus-lang/verus.git" }
 vstd = { git = "https://github.com/verus-lang/verus.git" }
 scapegoat = "2.3.0"

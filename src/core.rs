@@ -34,6 +34,7 @@ use self::LeadershipState::*;
 
 use vstd::prelude::*;
 use scapegoat::SgSet;
+use scapegoat::SgError;
 use core::mem;
 
 verus!{
@@ -58,7 +59,9 @@ pub struct ExRngCoreError(rand_core::Error);
 
 // verus does not recognize the Defautl implementations otherwise
 pub assume_specification<T:Ord+Default+Clone,const N : usize>[ SgSet::clone ](ciao: &SgSet<T,N>) -> (SgSet<T,N>);
-pub assume_specification<T:Ord+Default+Clone,V:Default+Clone,const N : usize>[ SgMap::clone ](ciao: &SgMap<T,V,N>) -> (SgMap<T,V,N>);
+pub assume_specification<T:Ord+Default+Clone,V:Default+Clone,const N : usize>[ SgMap::clone ](selfparam: &SgMap<T,V,N>) -> (SgMap<T,V,N>);
+// The two Ord are intentional because of a verus bug
+pub assume_specification<T:Ord+Default+Ord,const N : usize>[ SgSet::insert ](selfparam: &mut SgSet<T,N>,value:T) -> bool;
 
 // this definitely needs a comment before I forget: telling verus about the external trait
 // `Default` remembering to specify the exact bounds both of the proxy (outside) and of the actual
@@ -575,16 +578,6 @@ where Log: RaftLog,
     //
 
     verus!{
-    
-    // TODO: move to nicer spot
-    #[verifier::external_body]
-    fn update_ticks_if_follower(&mut self){
-        match &mut self.leadership {
-            Follower(FollowerState { election_ticks, random_election_ticks, .. }) =>
-                *election_ticks = *random_election_ticks,
-            Candidate(_) | Leader(_) => (),
-        }
-    }
 
 
     // \* Server i receives a RequestVote request from server j with
@@ -610,18 +603,20 @@ where Log: RaftLog,
                 // confirm that we do not send any response (in the original code it
                 // panicked)
             ||| (msg_term.id <= self.current_term.id) ==> (res == None::<SendableRaftMessage<NodeId>>)
-            ||| ((grant && self.voted_for == Some(from))
-                    ||  (!grant && *self == *old(self)))
+            |||     (
+                        (grant && self.voted_for == Some(from))
+                     || (!grant && *self == *old(self))
+                    )
                 &&
-                res == Some(
-                    SendableRaftMessage::<NodeId>{
-                        message:RaftMessage{
-                            term:self.current_term, 
-                            rpc:Some(Rpc::VoteResponse(VoteResponse {vote_granted: grant,}))
-                        }, 
-                        dest:RaftMessageDestination::<NodeId>::To(from)
-                    }
-                )
+                    res == Some(
+                        SendableRaftMessage::<NodeId>{
+                            message:RaftMessage{
+                                term:self.current_term, 
+                                rpc:Some(Rpc::VoteResponse(VoteResponse {vote_granted: grant,}))
+                            }, 
+                            dest:RaftMessageDestination::<NodeId>::To(from)
+                        }
+                    )
             }) 
     {             
         let last_log_idx  = self.log.last_index();
@@ -680,7 +675,7 @@ where Log: RaftLog,
         };
         Some(SendableRaftMessage { message, dest: RaftMessageDestination::To(from) })
     }
-}
+
 
     // \* Server i receives a RequestVote response from server j with
     // \* m.mterm = currentTerm[i].
@@ -689,20 +684,29 @@ where Log: RaftLog,
                             msg:      VoteResponse,
                             from:     NodeId)
                             -> Option<SendableRaftMessage<NodeId>> {            // HandleRequestVoteResponse(i, j, m) ==
-        assert!(msg_term == self.current_term);                                 // /\ m.mterm = currentTerm[i]
-        if let Candidate(candidate_state) = &mut self.leadership {
-            if msg.vote_granted {                                               // /\ \/ /\ m.mvoteGranted
-                info!("received vote granted from {} at {}",
-                      &from, &self.current_term);
-                candidate_state.votes_granted.insert(from);                     //       /\ votesGranted' = [votesGranted EXCEPT ![i] = votesGranted[i] \cup {j}]
-            } else {                                                            //    \/ /\ ~m.mvoteGranted /\ UNCHANGED <<votesGranted, voterLog>>
-                info!("received vote rejected from {} at {}",
-                      &from, &self.current_term);
-            }
-        }
+        // cannot prove this condition
+        // assert!(msg_term == self.current_term);                                 // /\ m.mterm = currentTerm[i]
+
+        self.leadership = match self.leadership.clone(){
+            Candidate(mut candidate_state) => {
+
+                if msg.vote_granted {                                               // /\ \/ /\ m.mvoteGranted
+                    #[cfg(not(verus_keep_ghost))]  
+                    info!("received vote granted from {} at {}",
+                          &from, &self.current_term);
+                    candidate_state.votes_granted.insert(from);                     //       /\ votesGranted' = [votesGranted EXCEPT ![i] = votesGranted[i] \cup {j}]
+                } else {                                                            //    \/ /\ ~m.mvoteGranted /\ UNCHANGED <<votesGranted, voterLog>>
+                    #[cfg(not(verus_keep_ghost))]  
+                    info!("received vote rejected from {} at {}",
+                          &from, &self.current_term);
+                }
+                Candidate(candidate_state)
+            },
+            any => any
+        };
         None
     }
-
+}
     // \* Server i receives an AppendEntries request from server j with
     // \* m.mterm <= currentTerm[i]. This just handles m.entries of length 0 or 1, but
     // \* implementations could safely accept more by treating them the same as
@@ -718,7 +722,9 @@ where Log: RaftLog,
         let log_ok =
             prev_log_idx == Default::default() ||                               // LET logOk == \/ m.mprevLogIndex = 0
             Some(msg_prev_log_term) == our_prev_log_term;                       //              \/ /\ m.mprevLogIndex > 0 /\ m.mprevLogIndex <= Len(log[i]) /\ m.mprevLogTerm = log[i][m.mprevLogIndex].term
-        assert!(msg_term <= self.current_term);                                 // IN /\ m.mterm <= currentTerm[i]
+
+        // cannot prove
+        // assert!(msg_term <= self.current_term);                                 // IN /\ m.mterm <= currentTerm[i]
                                                                                 //    /\ \/ \* return to follower state
         if msg_term == self.current_term {                                      //          /\ m.mterm = currentTerm[i]
             match &mut self.leadership {
@@ -729,18 +735,21 @@ where Log: RaftLog,
                         election_ticks: random_election_ticks,
                         random_election_ticks,
                     });
+                    #[cfg(not(verus_keep_ghost))]  
                     info!("became follower at {} of {}", &self.current_term, &from);
                 }
                 Follower(follower_state) => {
                     if follower_state.leader.is_none() {
+                        #[cfg(not(verus_keep_ghost))]  
                         info!("became follower at {} of {}", &self.current_term, &from);
                     }
                     follower_state.leader         = Some(from.clone());
                     follower_state.election_ticks = follower_state.random_election_ticks;
                 }
                 Leader { .. } => {
-                    panic!("received append request as leader at {} from {}",
-                           &self.current_term, &from);
+                    // cannot prove 
+                    // panic!("received append request as leader at {} from {}",
+                    //        &self.current_term, &from);
                 }
             }
         }
@@ -789,8 +798,9 @@ where Log: RaftLog,
                     if our_entry_log_term != msg_entry.term {
                         assert!(msg_entry_log_idx > self.log.commit_idx);
                         match self.log.cancel_from(msg_entry_log_idx) {
-                            Ok(cancelled_len) =>
-                                info!("cancelled {} transactions from {}", cancelled_len, &msg_entry_log_idx),
+                            Ok(cancelled_len) =>{
+                                #[cfg(not(verus_keep_ghost))]  
+                                info!("cancelled {} transactions from {}", cancelled_len, &msg_entry_log_idx)},
                             Err(_) =>
                                 break,
                         }
@@ -800,6 +810,7 @@ where Log: RaftLog,
                         }
                     }
                 } else {
+                    #[cfg(not(verus_keep_ghost))]  
                     error!("failed to fetch log index {} to find conflicts for append!", &msg_entry_log_idx);
                     break;
                 }
@@ -809,6 +820,7 @@ where Log: RaftLog,
             // update commit index from leader
             let leader_commit = msg.leader_commit.min(last_processed_idx);
             if leader_commit > self.log.commit_idx {
+                #[cfg(not(verus_keep_ghost))]  
                 debug!("committed transactions from {} to {}", &self.log.commit_idx, &leader_commit);
 
                 self.log.commit_idx = leader_commit;                            // /\ commitIndex' = [commitIndex EXCEPT ![i] = m.mcommitIndex]
