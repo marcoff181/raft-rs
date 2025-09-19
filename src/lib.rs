@@ -252,7 +252,8 @@ tokenized_state_machine!{
             #[sharding(map)]
             pub votes_granted: Map<nat,Set<nat>>,
 
-            // A history variable used in the proof. This would not be present in an implementation.Function from each server that voted for this candidate in its currentTerm to that voter's log.
+            // A history variable used in the proof. This would not be present in an implementation.
+            // Function from each server that voted for this candidate in its currentTerm to that voter's log.
             #[sharding(map)]
             pub voter_log: Map<nat,Map<nat,Seq<LogEntry>>>,
 
@@ -298,13 +299,75 @@ tokenized_state_machine!{
                 init commit_index = Map::new(|i:nat| servers has i, |i:nat| 0);
                 init votes_responded = Map::empty();
                 init votes_granted = Map::new(|i:nat| servers has i, |i:nat| Set::empty());
-                init voter_log = Map::empty();
+                init voter_log = Map::new(|i:nat| servers has i, |i:nat| Map::empty());
                 init next_index = Map::new(|i:nat| servers has i, |i:nat| Map::new(|j:nat| servers has j, |j:nat| 1));
                 init match_index = Map::new(|i:nat| servers has i, |i:nat| Map::new(|j:nat| servers has j, |j:nat| 0));
             }
         }
 
 
+        transition!{
+            restart(i:nat){
+                // /\ state'          = [state EXCEPT ![i] = Follower]
+                // /\ votesResponded' = [votesResponded EXCEPT ![i] = {}]
+                // /\ votesGranted'   = [votesGranted EXCEPT ![i] = {}]
+                // /\ voterLog'       = [voterLog EXCEPT ![i] = [j \in {} |-> <<>>]]
+                // /\ nextIndex'      = [nextIndex EXCEPT ![i] = [j \in Server |-> 1]]
+                // /\ matchIndex'     = [matchIndex EXCEPT ![i] = [j \in Server |-> 0]]
+                // /\ commitIndex'    = [commitIndex EXCEPT ![i] = 0]
+                
+                remove state -= [ i => let _];
+                remove votes_responded -= [ i => let _];
+                remove votes_granted -= [ i => let _];
+                remove voter_log -= [ i => let _];
+                remove next_index -= [ i => let _];
+                remove match_index -= [ i => let _];
+                remove commit_index -= [ i => let _];
+
+                add state += [ i => ServerState::Follower];
+                add votes_responded += [ i => Set::empty()];
+                add votes_granted += [ i => Set::empty()];
+                add voter_log += [ i => Map::empty()];
+                add next_index += [ i => Map::new(|i:nat| pre.servers has i, |i:nat| 1)];
+                add match_index += [ i => Map::new(|i:nat| pre.servers has i, |i:nat| 0)];
+                add commit_index += [ i => 0];
+
+                // /\ UNCHANGED <<messages, currentTerm, votedFor, log, elections>>
+            }
+        }
+
+        transition!{
+            timeout(i:nat){
+                // /\ state[i] \in {Follower, Candidate}
+                // /\ state' = [state EXCEPT ![i] = Candidate]
+                remove state -= [ i => let state];
+                require(state == ServerState::Follower || state == ServerState::Candidate);
+                add state += [ i => ServerState::Candidate];
+
+                // /\ currentTerm' = [currentTerm EXCEPT ![i] = currentTerm[i] + 1]
+                remove current_term -= [ i => let i_current_term];
+                add current_term += [ i => (i_current_term+1)];
+
+                // \* Most implementations would probably just set the local vote
+                // \* atomically, but messaging localhost for it is weaker.
+                // /\ votedFor' = [votedFor EXCEPT ![i] = Nil]
+                // /\ votesResponded' = [votesResponded EXCEPT ![i] = {}]
+                // /\ votesGranted'   = [votesGranted EXCEPT ![i] = {}]
+                // /\ voterLog'       = [voterLog EXCEPT ![i] = [j \in {} |-> <<>>]]
+
+                remove voted_for -= [ i => let _];
+                remove votes_responded -= [ i => let _];
+                remove votes_granted -= [ i => let _];
+                remove voter_log -= [ i => let _];
+
+                add voted_for += [ i => None];
+                add votes_responded += [ i => Set::empty()];
+                add votes_granted += [ i => Set::empty()];
+                add voter_log += [ i => Map::empty()];
+
+                // /\ UNCHANGED <<messages, leaderVars, logVars>>                
+            }
+        }
 
         #[inductive(handle_request_vote_request)]
         fn handle_request_vote_request_inductive(pre: Self, post: Self, m: RaftMessage) { }
@@ -526,7 +589,7 @@ tokenized_state_machine!{
         }
 
         // transition!{
-        //     handle_client_request(m:RaftMessage){
+        //     handle_client_request(){
         //         // remove messages -= [ msg_id => let  RaftMessage::ClientRequest{dest,value}];
         //         remove messages -= set { m };
         //         require let  RaftMessage::ClientRequest{dest,value} = m;
