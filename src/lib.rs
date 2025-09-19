@@ -211,7 +211,6 @@ tokenized_state_machine!{
             #[sharding(constant)]
             pub num_of_server : nat,
 
-            // global variables
             #[sharding(set)]
             pub messages: Set<RaftMessage>,
 
@@ -328,8 +327,8 @@ tokenized_state_machine!{
                 add votes_responded += [ i => Set::empty()];
                 add votes_granted += [ i => Set::empty()];
                 add voter_log += [ i => Map::empty()];
-                add next_index += [ i => Map::new(|i:nat| pre.servers has i, |i:nat| 1)];
-                add match_index += [ i => Map::new(|i:nat| pre.servers has i, |i:nat| 0)];
+                add next_index += [ i => Map::new(|x:nat| pre.servers has x, |x:nat| 1)];
+                add match_index += [ i => Map::new(|x:nat| pre.servers has x, |x:nat| 0)];
                 add commit_index += [ i => 0];
 
                 // /\ UNCHANGED <<messages, currentTerm, votedFor, log, elections>>
@@ -366,6 +365,101 @@ tokenized_state_machine!{
                 add voter_log += [ i => Map::empty()];
 
                 // /\ UNCHANGED <<messages, leaderVars, logVars>>                
+            }
+        }
+
+        #[inductive(request_vote)]
+        fn request_vote_inductive(pre: Self, post: Self, i:nat,j:nat) {
+        }
+
+        transition!{
+            request_vote(i:nat,j:nat){
+                // /\ state[i] = Candidate
+                have state >= [i  => ServerState::Candidate]; 
+
+                // /\ j \notin votesResponded[i]
+                have votes_responded >= [i  => let voted_for_me];
+                require(! voted_for_me has j);
+
+                // /\ Send([mtype         |-> RequestVoteRequest,
+                //          mterm         |-> currentTerm[i],
+                //          mlastLogTerm  |-> LastTerm(log[i]),
+                //          mlastLogIndex |-> Len(log[i]),
+                //          msource       |-> i,
+                //          mdest         |-> j])
+                have current_term >= [i  => let term];
+                have log >= [j  =>  let current_log  ];
+                let last_log_index = current_log.last();
+                let last_log_term =last_log_index.term;
+                let msg =RaftMessage::RequestVoteRequest{
+                    // TODO: confirm that last_log_index is correctly defined here
+                     src:i , dest:j , term : term , last_log_index:current_log.len() , last_log_term 
+                };
+
+                // have to do with sets at the moment because it's apparently very hard to generate
+                // fresh ids
+                remove messages -= set{msg};
+                add messages += set{msg};
+
+                // /\ UNCHANGED <<serverVars, candidateVars, leaderVars, logVars>>
+            }
+        }
+
+        #[inductive(become_leader)]
+        fn become_leader_inductive(pre: Self, post: Self, src:nat) {
+        }
+
+        transition!{
+            become_leader(src: nat){
+                have log >= [ src as nat => let src_log]; 
+                have current_term >= [ src as nat => let src_current_term];
+                have voter_log >= [src as nat => let src_voter_log];
+
+                // /\ state[i] = Candidate
+                remove state -= [src as nat => ServerState::Candidate];
+
+                // /\ votesGranted[i] \in Quorum
+                have votes_granted >= [src as nat => let src_votes_granted];
+                let threshold = pre.servers.len() / 2;  
+                let quorum = Set::new(|s: Set<nat>|   
+                    s.subset_of(pre.servers) && s.finite() && s.len() > threshold  
+                );  
+                require (quorum has src_votes_granted);
+
+                // /\ state'      = [state EXCEPT ![i] = Leader]
+                add state += [src as nat => ServerState::Leader];
+
+                // /\ nextIndex'  = [nextIndex EXCEPT ![i] =
+                //                      [j \in Server |-> Len(log[i]) + 1]]
+                remove next_index -= [src as nat => let _];
+                let src_next_index = Map::new(|j:nat| pre.servers has j ,|j:nat| src_log.len()) ;
+                add next_index += [src as nat => src_next_index];
+
+                // /\ matchIndex' = [matchIndex EXCEPT ![i] =
+                //                      [j \in Server |-> 0]]
+                remove match_index -= [src as nat => let _];
+                let src_match_index = Map::new(|j:nat| pre.servers has j ,|j:nat| 0nat) ;
+                add match_index += [src as nat => src_match_index];
+
+                // /\ elections'  = elections \cup
+                //                      {[eterm     |-> currentTerm[i],
+                //                        eleader   |-> i,
+                //                        elog      |-> log[i],
+                //                        evotes    |-> votesGranted[i],
+                //                        evoterLog |-> voterLog[i]]}
+                let new_election_record = ElectionRecord{
+                    term : src_current_term,
+                    leader: src as nat,
+                    log: src_log,
+                    votes: src_votes_granted,
+                    voter_log:src_voter_log,
+                };
+
+                // TODO: see if this can be removed
+                remove elections -= set { new_election_record};
+                add elections += set { new_election_record};
+
+                // /\ UNCHANGED <<messages, currentTerm, votedFor, candidateVars, logVars>>
             }
         }
 
@@ -492,104 +586,11 @@ tokenized_state_machine!{
             }
         }
 
-        // ----------- functions that represent internal behavior not related to message receiving logic
 
-        #[inductive(become_leader)]
-        fn become_leader_inductive(pre: Self, post: Self, src:nat) {
-        }
 
-        transition!{
-            become_leader(src: nat){
-                have log >= [ src as nat => let src_log]; 
-                have current_term >= [ src as nat => let src_current_term];
-                have voter_log >= [src as nat => let src_voter_log];
-
-                // /\ state[i] = Candidate
-                remove state -= [src as nat => ServerState::Candidate];
-
-                // /\ votesGranted[i] \in Quorum
-                have votes_granted >= [src as nat => let src_votes_granted];
-                let threshold = pre.servers.len() / 2;  
-                let quorum = Set::new(|s: Set<nat>|   
-                    s.subset_of(pre.servers) && s.finite() && s.len() > threshold  
-                );  
-                require (quorum has src_votes_granted);
-
-                // /\ state'      = [state EXCEPT ![i] = Leader]
-                add state += [src as nat => ServerState::Leader];
-
-                // /\ nextIndex'  = [nextIndex EXCEPT ![i] =
-                //                      [j \in Server |-> Len(log[i]) + 1]]
-                remove next_index -= [src as nat => let _];
-                let src_next_index = Map::new(|j:nat| pre.servers has j ,|j:nat| src_log.len()) ;
-                add next_index += [src as nat => src_next_index];
-
-                // /\ matchIndex' = [matchIndex EXCEPT ![i] =
-                //                      [j \in Server |-> 0]]
-                remove match_index -= [src as nat => let _];
-                let src_match_index = Map::new(|j:nat| pre.servers has j ,|j:nat| 0nat) ;
-                add match_index += [src as nat => src_match_index];
-
-                // /\ elections'  = elections \cup
-                //                      {[eterm     |-> currentTerm[i],
-                //                        eleader   |-> i,
-                //                        elog      |-> log[i],
-                //                        evotes    |-> votesGranted[i],
-                //                        evoterLog |-> voterLog[i]]}
-                let new_election_record = ElectionRecord{
-                    term : src_current_term,
-                    leader: src as nat,
-                    log: src_log,
-                    votes: src_votes_granted,
-                    voter_log:src_voter_log,
-                };
-
-                // TODO: see if this can be removed
-                remove elections -= set { new_election_record};
-                add elections += set { new_election_record};
-
-                // /\ UNCHANGED <<messages, currentTerm, votedFor, candidateVars, logVars>>
-            }
-        }
-
-        #[inductive(request_vote)]
-        fn request_vote_inductive(pre: Self, post: Self, src:nat,dest:nat) {
-
-        }
-
-        transition!{
-            request_vote(src:nat,dest:nat){
-                // /\ state[i] = Candidate
-                have state >= [src as nat => ServerState::Candidate]; 
-                // /\ j \notin votesResponded[i]
-                have votes_responded >= [src as nat => let voted_for_me];
-                require(! voted_for_me has dest);
-                // /\ Send([mtype         |-> RequestVoteRequest,
-                //          mterm         |-> currentTerm[i],
-                //          mlastLogTerm  |-> LastTerm(log[i]),
-                //          mlastLogIndex |-> Len(log[i]),
-                //          msource       |-> i,
-                //          mdest         |-> j])
-                have current_term >= [src as nat => let term];
-                have log >= [dest as nat =>  let current_log  ];
-                let last_log_index = current_log.last();
-                let last_log_term =last_log_index.term;
-                let msg =RaftMessage::RequestVoteRequest{
-                    // TODO: confirm that last_log_index is correctly defined here
-                     src:src , dest:dest , term : term , last_log_index:current_log.len() , last_log_term 
-                };
-
-                // have to do with sets at the moment because it's apparently very hard to generate
-                // fresh ids
-                remove messages -= set{msg};
-                add messages += set{msg};
-
-                // /\ UNCHANGED <<serverVars, candidateVars, leaderVars, logVars>>
-            }
-        }
 
         // transition!{
-        //     handle_client_request(){
+        //     client_request(){
         //         // remove messages -= [ msg_id => let  RaftMessage::ClientRequest{dest,value}];
         //         remove messages -= set { m };
         //         require let  RaftMessage::ClientRequest{dest,value} = m;
@@ -611,6 +612,18 @@ tokenized_state_machine!{
         //     }
         // }
         //
+
+        // transition!{
+        //     duplicate_message(m:RaftMessage){
+        //
+        //     }
+        // }
+        //
+        // transition!{
+        //     drop_message(m:RaftMessage){
+        //
+        //     }
+        // }
     }
 }
 
