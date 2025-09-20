@@ -267,17 +267,19 @@ tokenized_state_machine!{
             pub match_index: Map<nat,Map<nat,nat>>,
         }
 
-        // #[invariant]
-        // pub fn election_safety(&self) -> bool { 
-        //     forall |i: nat, j: nat| 
-        //             i != j && self.state.dom().contains(i) && self.state.dom().contains(j)
-        //             ==> !(#[trigger] self.state.get(i) == Some(ServerState::Leader) && #[trigger] self.state.get(j) == Some(ServerState::Leader))
-        // }
-
+        // if two servers are leaders then their terms must be different
         #[invariant]
-        pub fn messages_is_finite(&self) -> bool { 
-            self.messages.dom().finite()
+        pub fn election_safety(&self) -> bool { 
+            forall |i: nat, j: nat| 
+                    i != j && self.state.dom().contains(i) && self.state.dom().contains(j) &&
+                    self.state.get(i) == Some(ServerState::Leader) && self.state.get(j) == Some(ServerState::Leader)
+                    ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
         }
+
+        // #[invariant]
+        // pub fn messages_is_finite(&self) -> bool { 
+        //     self.messages.dom().finite()
+        // }
 
         #[inductive(initialize)]
         fn initialize_inductive(post: Self, servers: Set<nat>) 
@@ -344,7 +346,9 @@ tokenized_state_machine!{
         }
 
         #[inductive(timeout)]
-        fn timeout_inductive(pre: Self, post: Self, i: nat) { }
+        fn timeout_inductive(pre: Self, post: Self, i: nat) { 
+            assert(forall |j: nat| pre.state.get(j) == Some(ServerState::Leader) ==> (post.state.get(j) == Some(ServerState::Leader)) && pre.current_term.get(j) ==  post.current_term.get(j));
+        }
 
         transition!{
             timeout(i:nat){
