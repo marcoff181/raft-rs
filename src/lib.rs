@@ -137,6 +137,7 @@ use verus_state_machines_macros::tokenized_state_machine;
 use vstd::prelude::*;
 use vstd::prelude::nat;
 use vstd::relations::total_ordering;
+use vstd::multiset::Multiset;
 
 
 verus! {
@@ -211,8 +212,8 @@ tokenized_state_machine!{
             #[sharding(constant)]
             pub num_of_server : nat,
 
-            #[sharding(map)]
-            pub messages: Map<nat,RaftMessage>,
+            #[sharding(multiset)]
+            pub messages: Multiset<RaftMessage>,
 
             #[sharding(variable)]
             pub servers: Set<nat>,
@@ -266,7 +267,6 @@ tokenized_state_machine!{
             pub match_index: Map<nat,Map<nat,nat>>,
         }
 
-        // there can never be two leaders at the same time
         // #[invariant]
         // pub fn election_safety(&self) -> bool { 
         //     forall |i: nat, j: nat| 
@@ -292,9 +292,11 @@ tokenized_state_machine!{
 
                 init num_of_server = num_nodes;
                 init servers = servers;
-                init messages = Map::empty();
+                init messages = Multiset::empty();
                 init elections = Set::empty();
                 init allLogs = Map::empty();
+                // TODO: maybe for verification purposes building sets from empty and then adding
+                // items has better guarantees
                 init current_term = Map::new(|i:nat| servers has i , |i:nat| 1);
                 init state = Map::new(|i:nat| servers has i, |i:nat| ServerState::Follower);
                 init voted_for = Map::new(|i:nat| servers has i, |i:nat| None);
@@ -400,25 +402,12 @@ tokenized_state_machine!{
                 have log >= [j  =>  let current_log  ];
                 let last_log_index = current_log.last();
                 let last_log_term =last_log_index.term;
-                let msg =RaftMessage::RequestVoteRequest{
+                let response =RaftMessage::RequestVoteRequest{
                     // TODO: confirm that last_log_index is correctly defined here
                      src:i , dest:j , term : term , last_log_index:current_log.len() , last_log_term 
                 };
 
-                // generate fresh id to insert messages
-                let r = |a:nat,b:nat| a <= b;
-                birds_eye let fresh_id = { 
-                    if pre.messages.dom().is_empty(){1} 
-                    else{
-                        pre.messages.dom().find_unique_maximal(r) + 1
-                    }
-                };
-
-                add messages += [fresh_id => msg] by {  
-                    assert(pre.messages.dom().finite());
-                    // TODO: confirm this is needed
-                    assume(!pre.messages.dom().contains(fresh_id));
-                };
+                add messages += {response}; 
 
                 // /\ UNCHANGED <<serverVars, candidateVars, leaderVars, logVars>>
             }
@@ -483,20 +472,20 @@ tokenized_state_machine!{
         }
 
         #[inductive(handle_request_vote_request)]
-        fn handle_request_vote_request_inductive(pre: Self, post: Self, msg_id:nat) { }
+        fn handle_request_vote_request_inductive(pre: Self, post: Self, m:RaftMessage) { }
 
         transition!{
-            handle_request_vote_request(msg_id:nat){
-                // remove messages -= set { m };
-                // require let  RaftMessage::RequestVoteRequest { src, dest, term, last_log_index, last_log_term } = m;
-                remove messages -= [ msg_id => let
-                RaftMessage::RequestVoteRequest {
-                    src,
-                    dest,
-                    term,
-                    last_log_index,
-                    last_log_term,
-                }];
+            handle_request_vote_request(m:RaftMessage){
+                remove messages -= { m };
+                require let  RaftMessage::RequestVoteRequest { src, dest, term, last_log_index, last_log_term } = m;
+                // remove messages -= [ msg_id => let
+                // RaftMessage::RequestVoteRequest {
+                //     src,
+                //     dest,
+                //     term,
+                //     last_log_index,
+                //     last_log_term,
+                // }];
 
                 have log >= [dest as nat =>  let current_log  ];
                 let my_last_log_index = current_log.last();
@@ -545,34 +534,23 @@ tokenized_state_machine!{
                     term: my_current_term as nat,
                     vote_granted : grant,
                 };
-                
-                // generate fresh id to insert messages
-                let r = |a:nat,b:nat| a <= b;
-                birds_eye let fresh_id = { 
-                    if pre.messages.dom().is_empty(){1} 
-                    else{
-                        pre.messages.dom().find_unique_maximal(r) + 1
-                    }
-                };
 
-                add messages += [fresh_id => response] by {  
-                    assert(pre.messages.dom().finite());
-                    // TODO: confirm this is needed
-                    assume(!pre.messages.dom().contains(fresh_id));
-                };
-
+                add messages += {response}; 
                 //    /\ UNCHANGED <<state, currentTerm, candidateVars, leaderVars, logVars>>
             }
         }
 
        
         #[inductive(handle_request_vote_response)]
-        fn handle_request_vote_response_inductive(pre: Self, post: Self, msg_id:nat) { }
+        fn handle_request_vote_response_inductive(pre: Self, post: Self, m:RaftMessage) { }
        
         transition!{
-            handle_request_vote_response(msg_id:nat){
-                // /\ Discard(m)
-                remove messages -= [ msg_id => let RaftMessage::RequestVoteResponse { src, dest, term, vote_granted }];
+            handle_request_vote_response(m:RaftMessage){
+                remove messages -= { m };
+                require let  RaftMessage::RequestVoteResponse { src, dest, term, vote_granted } = m;
+
+                // // /\ Discard(m)
+                // remove messages -= [ msg_id => let RaftMessage::RequestVoteResponse { src, dest, term, vote_granted }];
 
                 have current_term >= [dest as nat =>  let my_current_term  ];
 
