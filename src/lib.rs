@@ -209,17 +209,19 @@ pub enum ServerState {
 tokenized_state_machine!{
     RAFT{
         fields{
-            #[sharding(constant)]
-            pub num_of_server : nat,
-
             #[sharding(multiset)]
             pub messages: Multiset<RaftMessage>,
 
-            #[sharding(variable)]
+            #[sharding(constant)]
             pub servers: Set<nat>,
 
-            #[sharding(set)]
-            pub elections:Set<ElectionRecord>,
+            #[sharding(constant)]
+            pub quorum: Set<Set<nat>>,
+
+            // #[sharding(not_tokenized)]
+            // term -> election_record
+            #[sharding(map)]
+            pub elections:Map<nat,ElectionRecord>,
 
             #[sharding(map)]
             pub allLogs: Map<nat,LogEntry>,
@@ -268,34 +270,81 @@ tokenized_state_machine!{
         }
 
         // if two servers are leaders then their terms must be different
+        // similar to the invariant defined here: https://arxiv.org/html/2403.18916v1
         #[invariant]
         pub fn election_safety(&self) -> bool { 
             forall |i: nat, j: nat| 
-                    i != j && self.state.dom().contains(i) && self.state.dom().contains(j) &&
-                    self.state.get(i) == Some(ServerState::Leader) && self.state.get(j) == Some(ServerState::Leader)
+                    i != j &&
+                    self.state.get(i) == Some(ServerState::Leader) &&
+                    self.state.get(j) == Some(ServerState::Leader)
                     ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
         }
-
+        // need to state that: each node votes only once in its term
+        //                     between the sets of nodes of the same term there can only be one
+        //                     with quorum 
+        
+        // // only one leader can be elected per term
         // #[invariant]
-        // pub fn messages_is_finite(&self) -> bool { 
-        //     self.messages.dom().finite()
+        // pub fn election_safety_v2(&self) -> bool { 
+        //     forall |r1: ElectionRecord, r2:ElectionRecord| 
+        //             r1.leader != r2.leader &&
+        //             self.elections.contains_value(r1) &&
+        //             self.elections.contains_value(r2) 
+        //             ==> #[trigger] r1.term != #[trigger] r2.term
         // }
+
+        #[invariant]
+        pub fn domains_match(&self) -> bool { 
+            forall |i:nat|
+                #[trigger]self.servers.contains(i) <==> #[trigger]self.votes_granted.dom().contains(i) 
+        }
+
+        #[invariant]
+        pub fn quorum_intersects(&self) -> bool { 
+            forall |i:Set<nat>,j:Set<nat>|
+                i != j &&
+                self.quorum.contains(i) &&
+                self.quorum.contains(j) 
+                ==> !#[trigger]i.disjoint(j)
+        }
 
         #[inductive(initialize)]
         fn initialize_inductive(post: Self, servers: Set<nat>) 
         {
+            // proof for `quorum_intersects` 
+            assert forall |i:Set<nat>,j:Set<nat>|  
+                i != j &&
+                post.quorum.contains(i) &&
+                post.quorum.contains(j) 
+                implies !#[trigger]i.disjoint(j)
+            by { 
+                // verus knows that i.union(j) is a subset of servers, so we can say that it is also
+                // of len <= to len of servers
+                vstd::set_lib::lemma_len_subset(i.union(j),servers);
+                assert(i.union(j).len() <= post.servers.len());
+
+                // proof by contradiction
+                if i.disjoint(j){
+                    // ensures i.disjoint(j) ==> i.union(j).len() == i.len()+j.len();
+                    vstd::set_lib::lemma_set_disjoint_lens(i,j);
+                    assert(i.union(j).len() > post.servers.len());
+                }
+            }
         }
 
         init!{
             initialize(servers: Set<nat>)
             {
-                let num_nodes = servers.len();
-                require(num_nodes > 1);
+                require(servers.finite());
+                require(servers.len() > 1);
+                // require(servers.len() < 10);
 
-                init num_of_server = num_nodes;
                 init servers = servers;
+                init quorum = Set::new(|s: Set<nat>|   
+                    s.subset_of(servers) && s.finite() && s.len() > servers.len() / 2  
+                );
                 init messages = Multiset::empty();
-                init elections = Set::empty();
+                init elections = Map::empty();
                 init allLogs = Map::empty();
                 // TODO: maybe for verification purposes building sets from empty and then adding
                 // items has better guarantees
@@ -347,7 +396,10 @@ tokenized_state_machine!{
 
         #[inductive(timeout)]
         fn timeout_inductive(pre: Self, post: Self, i: nat) { 
-            assert(forall |j: nat| pre.state.get(j) == Some(ServerState::Leader) ==> (post.state.get(j) == Some(ServerState::Leader)) && pre.current_term.get(j) ==  post.current_term.get(j));
+            assert(forall |j: nat| 
+                pre.state.get(j) == Some(ServerState::Leader) 
+                ==> post.state.get(j) == Some(ServerState::Leader) &&
+                    pre.current_term.get(j) ==  post.current_term.get(j));
         }
 
         transition!{
@@ -418,40 +470,44 @@ tokenized_state_machine!{
         }
 
         #[inductive(become_leader)]
-        fn become_leader_inductive(pre: Self, post: Self, src:nat) {
+        fn become_leader_inductive(pre: Self, post: Self, i:nat) {
+            // assert forall |i: nat, j: nat| 
+            //         i != j &&
+            //         self.state.get(i) == Some(ServerState::Leader) &&
+            //         self.state.get(j) == Some(ServerState::Leader)
+            //         ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j) 
+            // by{
+            //
+            // }
         }
 
         transition!{
-            become_leader(src: nat){
-                have log >= [ src as nat => let src_log]; 
-                have current_term >= [ src as nat => let src_current_term];
-                have voter_log >= [src as nat => let src_voter_log];
+            become_leader(i: nat){
+                have log >= [ i => let i_log]; 
+                have current_term >= [ i => let i_current_term];
+                have voter_log >= [i => let i_voter_log];
 
                 // /\ state[i] = Candidate
-                remove state -= [src as nat => ServerState::Candidate];
+                remove state -= [i => ServerState::Candidate];
 
                 // /\ votesGranted[i] \in Quorum
-                have votes_granted >= [src as nat => let src_votes_granted];
-                let threshold = pre.servers.len() / 2;  
-                let quorum = Set::new(|s: Set<nat>|   
-                    s.subset_of(pre.servers) && s.finite() && s.len() > threshold  
-                );  
-                require (quorum has src_votes_granted);
+                have votes_granted >= [i => let i_votes_granted];
+                require (pre.quorum.contains(i_votes_granted));
 
                 // /\ state'      = [state EXCEPT ![i] = Leader]
-                add state += [src as nat => ServerState::Leader];
+                add state += [i => ServerState::Leader];
 
                 // /\ nextIndex'  = [nextIndex EXCEPT ![i] =
                 //                      [j \in Server |-> Len(log[i]) + 1]]
-                remove next_index -= [src as nat => let _];
-                let src_next_index = Map::new(|j:nat| pre.servers has j ,|j:nat| src_log.len()) ;
-                add next_index += [src as nat => src_next_index];
+                remove next_index -= [i => let _];
+                let i_next_index = Map::new(|j:nat| pre.servers has j ,|j:nat| i_log.len()) ;
+                add next_index += [i => i_next_index];
 
                 // /\ matchIndex' = [matchIndex EXCEPT ![i] =
                 //                      [j \in Server |-> 0]]
-                remove match_index -= [src as nat => let _];
-                let src_match_index = Map::new(|j:nat| pre.servers has j ,|j:nat| 0nat) ;
-                add match_index += [src as nat => src_match_index];
+                remove match_index -= [i => let _];
+                let i_match_index = Map::new(|j:nat| pre.servers has j ,|j:nat| 0nat) ;
+                add match_index += [i => i_match_index];
 
                 // /\ elections'  = elections \cup
                 //                      {[eterm     |-> currentTerm[i],
@@ -459,17 +515,25 @@ tokenized_state_machine!{
                 //                        elog      |-> log[i],
                 //                        evotes    |-> votesGranted[i],
                 //                        evoterLog |-> voterLog[i]]}
-                let new_election_record = ElectionRecord{
-                    term : src_current_term,
-                    leader: src as nat,
-                    log: src_log,
-                    votes: src_votes_granted,
-                    voter_log:src_voter_log,
-                };
-
-                // TODO: see if this can be removed
-                remove elections -= set { new_election_record};
-                add elections += set { new_election_record};
+                // let new_election_record = ElectionRecord{
+                //     term : i_current_term,
+                //     leader: i,
+                //     log: i_log,
+                //     votes: i_votes_granted,
+                //     voter_log: i_voter_log,
+                // };
+                //
+                // add elections += [i_current_term => new_election_record]by{
+                    // assert forall |j:nat| 
+                    //     j != i &&
+                    //     pre.current_term.get(j) == Some(i_current_term)
+                    //     implies 
+                    //         #[trigger]pre.current_term.get(j) != Some(i_current_term)
+                    //     by {
+                    //
+                    //     }
+                    // assert(!pre.elections.contains_key(i_current_term));
+                // }; 
 
                 // /\ UNCHANGED <<messages, currentTerm, votedFor, candidateVars, logVars>>
             }
