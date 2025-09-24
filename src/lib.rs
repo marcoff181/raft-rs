@@ -281,6 +281,35 @@ tokenized_state_machine!{
                     ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
         }
 
+        // #[invariant]
+        // pub fn message_correctness(&self) -> bool { 
+        //     forall |m: RaftMessage|
+        //         self.messages.contains(m)
+        //         ==> #[trigger]self.servers.contains(m.src()) &&
+        //             #[trigger]self.servers.contains(m.dest()) 
+        // }
+
+        #[invariant]
+        pub fn matching_domains(&self) -> bool { 
+            &&& self.servers =~= self.current_term.dom() 
+            &&& self.servers =~= self.state.dom()
+            &&& self.servers =~= self.voted_for.dom() 
+            &&& self.servers =~= self.log.dom() 
+            &&& self.servers =~= self.commit_index.dom() 
+            &&& self.servers =~= self.votes_responded.dom() 
+            &&& self.servers =~= self.votes_granted.dom() 
+            &&& self.servers =~= self.voter_log.dom() 
+            &&& self.servers =~= self.next_index.dom() 
+            &&& self.servers =~= self.match_index.dom() 
+        }
+
+        #[invariant]
+        pub fn leader_has_quorum(&self) -> bool { 
+            forall |i:nat|
+                self.state.get(i) == Some(ServerState::Leader)
+                ==> #[trigger]self.quorum.contains(self.votes_granted.get(i).unwrap()) 
+        }
+
         // need to state that: each node votes only once in its term
         //                     between the sets of nodes of the same term there can only be one
         //                     with quorum 
@@ -315,6 +344,7 @@ tokenized_state_machine!{
                 self.quorum.contains(j) 
                 ==> !#[trigger]i.disjoint(j)
         }
+
 
         #[inductive(initialize)]
         fn initialize_inductive(post: Self, servers: Set<nat>) 
@@ -361,7 +391,7 @@ tokenized_state_machine!{
                 init voted_for = Map::new(|i:nat| servers has i, |i:nat| None);
                 init log = Map::new(|i:nat| servers has i, |i:nat| Seq::empty());
                 init commit_index = Map::new(|i:nat| servers has i, |i:nat| 0);
-                init votes_responded = Map::empty();
+                init votes_responded = Map::new(|i:nat| servers has i, |i:nat| Set::empty());
                 init votes_granted = Map::new(|i:nat| servers has i, |i:nat| Set::empty());
                 init voter_log = Map::new(|i:nat| servers has i, |i:nat| Map::empty());
                 init next_index = Map::new(|i:nat| servers has i, |i:nat| Map::new(|j:nat| servers has j, |j:nat| 1));
@@ -371,7 +401,12 @@ tokenized_state_machine!{
         // TODO: add advanced term logic
 
         #[inductive(restart)]
-        fn restart_inductive(pre: Self, post: Self, i: nat) { }
+        fn restart_inductive(pre: Self, post: Self, i: nat) { 
+            // leader_has_quorum
+            assert forall |j:nat|
+                i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
+            by{};
+        }
 
         transition!{
             restart(i:nat){
@@ -404,11 +439,16 @@ tokenized_state_machine!{
 
         #[inductive(timeout)]
         fn timeout_inductive(pre: Self, post: Self, i: nat) { 
-            // proof for election_safety
+            // election_safety
             assert(forall |j: nat| 
                 pre.state.get(j) == Some(ServerState::Leader) 
                 ==> post.state.get(j) == Some(ServerState::Leader) &&
                     pre.current_term.get(j) ==  post.current_term.get(j));
+
+            // leader_has_quorum
+            assert forall |j:nat|
+                i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
+            by{};
         }
 
         transition!{
@@ -479,17 +519,28 @@ tokenized_state_machine!{
 
         #[inductive(become_leader)]
         fn become_leader_inductive(pre: Self, post: Self, i:nat) {
-            // assert forall | j: nat| 
-            //         i != j &&
-            //         pre.state.get(j) == Some(ServerState::Leader) 
-            //         // pre.state.get(y) == Some(ServerState::Leader)
-            //         implies #[trigger] pre.current_term.get(i) != #[trigger] pre.current_term.get(j) 
-            // by{
-            //     assert(pre.quorum has pre.votes_granted.get(i).unwrap() );
-            //     // show that any other 
-            //
-            //
-            // }
+            assert forall | j: nat| 
+                    i != j &&
+                    pre.state.get(j) == Some(ServerState::Leader) 
+                    // pre.state.get(y) == Some(ServerState::Leader)
+                    implies #[trigger] pre.current_term.get(i) != #[trigger] pre.current_term.get(j) 
+            by{
+
+                // - a leader (j) still has its votes_granted, and we know its term
+                // - j's votes_granted must be in the quorum for it to have become leader
+                assert(pre.quorum.contains(pre.votes_granted.get(j).unwrap()));
+                // - but then we also know that the votes for i are in the quorum
+                assert(pre.quorum.contains(pre.votes_granted.get(i).unwrap()));
+                // - for the same term we cannot have two nodes with vgranted in quorum because:
+                //      - for the same term vgranted must be disjoint between each node
+                //      - if vgrantedi and vgrantedj are disjoint then they cannot both be in
+                //      quorum
+                //  - this means that their terms are different (do this by assuming the terms are
+                //  equal and arrive to a contradiction
+
+
+
+            }
         }
 
         transition!{
@@ -578,9 +629,8 @@ tokenized_state_machine!{
         
         #[inductive(update_term)]
         fn update_term_inductive(pre: Self, post: Self, i: nat, m: RaftMessage) {
-            // election_safety proof, just enough to make verus understand that the rest of
-            // current_term is not affected, and knowing that ServerState becomes follower it is
-            // able to finish the proof automatically
+            // just enough to make verus understand that the rest of current_term is not affected,
+            // knowing that ServerState of i becomes follower it is able to finish the proof automatically
             assert forall |x: nat| 
                 x != i implies pre.current_term.get(x) == post.current_term.get(x)   
             by{};
@@ -693,7 +743,51 @@ tokenized_state_machine!{
 
        
         #[inductive(handle_request_vote_response)]
-        fn handle_request_vote_response_inductive(pre: Self, post: Self, m:RaftMessage) { }
+        fn handle_request_vote_response_inductive(pre: Self, post: Self, m:RaftMessage) { 
+            // unpack destination 
+            let msg = match m{
+                RaftMessage::RequestVoteResponse{dest,src,vote_granted,..} => Some((dest,src,vote_granted)),
+                _ => None
+            };
+            assert(msg.is_some());
+            let (i,src,vote_granted) = msg.unwrap();
+
+            // leader_has_quorum
+            // assert forall |j:nat|
+            //     i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
+            // by{};
+
+            // forall |i:nat|
+            //     self.state.get(i) == Some(ServerState::Leader)
+            //     ==> #[trigger]self.quorum.contains(self.votes_granted.get(i).unwrap()) 
+
+            assert forall |j:nat|
+                if i != j{
+                    pre.votes_granted.get(j)  =~= post.votes_granted.get(j) //&&
+                    // pre.state.get(j) == post.state.get(j)
+
+                }
+                else{
+                    if pre.state.get(i) == Some(ServerState::Leader){
+                        pre.quorum.contains(pre.votes_granted.get(i).unwrap()) &&
+                        if vote_granted{
+                            post.votes_granted.get(i).unwrap() == pre.votes_granted.get(i).unwrap().insert(src) &&
+                                true
+                            //TODO: go back here and check it works now
+                            // pre.servers.contains(src)
+                            // pre.quorum.contains(pre.votes_granted.get(i).unwrap().insert(src))
+                        }
+                        else{
+                            post.votes_granted.get(i).unwrap() == pre.votes_granted.get(i).unwrap()
+                        }
+                        
+                    }
+                    else{
+                        true
+                    }
+                }
+            by{};
+        }
        
         transition!{
             handle_request_vote_response(m:RaftMessage){
@@ -705,6 +799,7 @@ tokenized_state_machine!{
 
                 // \* This tallies votes even when the current state is not Candidate, but
                 // \* they won't be looked at, so it doesn't matter.
+
                 // /\ m.mterm = currentTerm[i]
                 require(term == my_current_term);
 
