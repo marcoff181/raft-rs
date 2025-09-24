@@ -271,18 +271,31 @@ tokenized_state_machine!{
 
         // if two servers are leaders then their terms must be different
         // similar to the invariant defined here: https://arxiv.org/html/2403.18916v1
-        #[invariant]
-        pub fn election_safety(&self) -> bool { 
-            forall |i: nat, j: nat| 
-                    i != j &&
-                    self.state.get(i) == Some(ServerState::Leader) &&
-                    self.state.get(j) == Some(ServerState::Leader)
-                    ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
-        }
+        // #[invariant]
+        // pub fn election_safety(&self) -> bool { 
+        //     forall |i: nat, j: nat| 
+        //             i != j &&
+        //             self.state.get(i) == Some(ServerState::Leader) &&
+        //             self.state.get(j) == Some(ServerState::Leader)
+        //             ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
+        // }
+
         // need to state that: each node votes only once in its term
         //                     between the sets of nodes of the same term there can only be one
         //                     with quorum 
         
+        // #[invariant]
+        // pub fn votes_granted_disjoint(&self) -> bool { 
+        //     forall |i:nat,j:nat|
+        //         i != j &&
+        //         !self.votes_granted.get(i).unwrap().is_empty() &&
+        //         !self.votes_granted.get(j).unwrap().is_empty() &&
+        //         self.current_term.contains_key(i) &&
+        //         self.current_term.contains_key(j) &&
+        //         self.current_term.get(i) == self.current_term.get(j)
+        //         ==> !#[trigger](self.votes_granted.get(i).unwrap().disjoint(self.votes_granted.get(j).unwrap()))
+        // }
+
         // // only one leader can be elected per term
         // #[invariant]
         // pub fn election_safety_v2(&self) -> bool { 
@@ -292,12 +305,6 @@ tokenized_state_machine!{
         //             self.elections.contains_value(r2) 
         //             ==> #[trigger] r1.term != #[trigger] r2.term
         // }
-
-        #[invariant]
-        pub fn domains_match(&self) -> bool { 
-            forall |i:nat|
-                #[trigger]self.servers.contains(i) <==> #[trigger]self.votes_granted.dom().contains(i) 
-        }
 
         #[invariant]
         pub fn quorum_intersects(&self) -> bool { 
@@ -360,6 +367,7 @@ tokenized_state_machine!{
                 init match_index = Map::new(|i:nat| servers has i, |i:nat| Map::new(|j:nat| servers has j, |j:nat| 0));
             }
         }
+        // TODO: add advanced term logic
 
         #[inductive(restart)]
         fn restart_inductive(pre: Self, post: Self, i: nat) { }
@@ -373,7 +381,6 @@ tokenized_state_machine!{
                 // /\ nextIndex'      = [nextIndex EXCEPT ![i] = [j \in Server |-> 1]]
                 // /\ matchIndex'     = [matchIndex EXCEPT ![i] = [j \in Server |-> 0]]
                 // /\ commitIndex'    = [commitIndex EXCEPT ![i] = 0]
-                
                 remove state -= [ i => let _];
                 remove votes_responded -= [ i => let _];
                 remove votes_granted -= [ i => let _];
@@ -396,6 +403,7 @@ tokenized_state_machine!{
 
         #[inductive(timeout)]
         fn timeout_inductive(pre: Self, post: Self, i: nat) { 
+            // proof for election_safety
             assert(forall |j: nat| 
                 pre.state.get(j) == Some(ServerState::Leader) 
                 ==> post.state.get(j) == Some(ServerState::Leader) &&
@@ -420,7 +428,6 @@ tokenized_state_machine!{
                 // /\ votesResponded' = [votesResponded EXCEPT ![i] = {}]
                 // /\ votesGranted'   = [votesGranted EXCEPT ![i] = {}]
                 // /\ voterLog'       = [voterLog EXCEPT ![i] = [j \in {} |-> <<>>]]
-
                 remove voted_for -= [ i => let _];
                 remove votes_responded -= [ i => let _];
                 remove votes_granted -= [ i => let _];
@@ -471,12 +478,15 @@ tokenized_state_machine!{
 
         #[inductive(become_leader)]
         fn become_leader_inductive(pre: Self, post: Self, i:nat) {
-            // assert forall |i: nat, j: nat| 
+            // assert forall | j: nat| 
             //         i != j &&
-            //         self.state.get(i) == Some(ServerState::Leader) &&
-            //         self.state.get(j) == Some(ServerState::Leader)
-            //         ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j) 
+            //         pre.state.get(j) == Some(ServerState::Leader) 
+            //         // pre.state.get(y) == Some(ServerState::Leader)
+            //         implies #[trigger] pre.current_term.get(i) != #[trigger] pre.current_term.get(j) 
             // by{
+            //     assert(pre.quorum has pre.votes_granted.get(i).unwrap() );
+            //     // show that any other 
+            //
             //
             // }
         }
@@ -539,6 +549,79 @@ tokenized_state_machine!{
             }
         }
 
+        // -----------------------------------------------------------------------------------
+        //                      Message-Based transitions
+        // -----------------------------------------------------------------------------------
+
+        // The TLA handles message receiving logic like this:
+        //
+        // Receive(m) ==
+        //     LET i == m.mdest
+        //         j == m.msource
+        //     IN \* Any RPC with a newer term causes the recipient to advance
+        //        \* its term first. Responses with stale terms are ignored.
+        //        \/ UpdateTerm(i, j, m)
+        //        \/ /\ m.mtype = RequestVoteRequest
+        //           /\ HandleRequestVoteRequest(i, j, m)
+        //        \/ /\ m.mtype = RequestVoteResponse
+        //           /\ \/ DropStaleResponse(i, j, m)
+        //              \/ HandleRequestVoteResponse(i, j, m)
+        //        \/ /\ m.mtype = AppendEntriesRequest
+        //           /\ HandleAppendEntriesRequest(i, j, m)
+        //        \/ /\ m.mtype = AppendEntriesResponse
+        //           /\ \/ DropStaleResponse(i, j, m)
+        //              \/ HandleAppendEntriesResponse(i, j, m)
+        //
+        // Given that verus does not allow to call transitions inside transitions, these are split
+        // into individual functions, with prerequisites that match those in TLA
+        
+        #[inductive(update_term)]
+        fn update_term_inductive(pre: Self, post: Self, i: nat, m: RaftMessage) { }
+
+        transition!{
+            // the update_term transition is triggered when *any* message arrives with a more
+            // recent term. The message is not discarded so that it can be handled by the other
+            // functions
+            update_term(i:nat,m:RaftMessage){
+                let term = match m{
+                    RaftMessage::AppendEntriesRequest {
+                        term,
+                        ..
+                    }=>term,
+                    RaftMessage::AppendEntriesResponse {
+                        term,
+                        ..
+                    }=>term,
+                    RaftMessage::RequestVoteRequest {
+                        term,
+                        ..
+                    }=>term,
+                    RaftMessage::RequestVoteResponse {
+                        term,
+                        ..
+                    }=>term,
+                };
+                remove current_term -= [i => let i_term  ];
+
+                // /\ m.mterm > currentTerm[i]
+                require(term > i_term);
+                
+                // /\ currentTerm'    = [currentTerm EXCEPT ![i] = m.mterm]
+                add current_term += [i => term];
+
+                // /\ state'          = [state       EXCEPT ![i] = Follower]
+                remove state -= [ i => let _];
+                add state += [ i => ServerState::Follower];
+
+                // /\ votedFor'       = [votedFor    EXCEPT ![i] = Nil]
+                remove voted_for -= [ i => let _];
+                add voted_for += [ i => None];
+
+                //    \* messages is unchanged so m can be processed further.
+                // /\ UNCHANGED <<messages, candidateVars, leaderVars, logVars>>
+            }
+        }
+
         #[inductive(handle_request_vote_request)]
         fn handle_request_vote_request_inductive(pre: Self, post: Self, m:RaftMessage) { }
 
@@ -546,14 +629,6 @@ tokenized_state_machine!{
             handle_request_vote_request(m:RaftMessage){
                 remove messages -= { m };
                 require let  RaftMessage::RequestVoteRequest { src, dest, term, last_log_index, last_log_term } = m;
-                // remove messages -= [ msg_id => let
-                // RaftMessage::RequestVoteRequest {
-                //     src,
-                //     dest,
-                //     term,
-                //     last_log_index,
-                //     last_log_term,
-                // }];
 
                 have log >= [dest as nat =>  let current_log  ];
                 let my_last_log_index = current_log.last();
@@ -614,11 +689,9 @@ tokenized_state_machine!{
        
         transition!{
             handle_request_vote_response(m:RaftMessage){
+                // // /\ Discard(m)
                 remove messages -= { m };
                 require let  RaftMessage::RequestVoteResponse { src, dest, term, vote_granted } = m;
-
-                // // /\ Discard(m)
-                // remove messages -= [ msg_id => let RaftMessage::RequestVoteResponse { src, dest, term, vote_granted }];
 
                 have current_term >= [dest as nat =>  let my_current_term  ];
 
