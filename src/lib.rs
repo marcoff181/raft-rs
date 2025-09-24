@@ -206,6 +206,7 @@ pub enum ServerState {
     Follower,
 }
 
+//TODO: check that all message handlers check that the opposite of update_term condition is true
 tokenized_state_machine!{
     RAFT{
         fields{
@@ -271,14 +272,14 @@ tokenized_state_machine!{
 
         // if two servers are leaders then their terms must be different
         // similar to the invariant defined here: https://arxiv.org/html/2403.18916v1
-        // #[invariant]
-        // pub fn election_safety(&self) -> bool { 
-        //     forall |i: nat, j: nat| 
-        //             i != j &&
-        //             self.state.get(i) == Some(ServerState::Leader) &&
-        //             self.state.get(j) == Some(ServerState::Leader)
-        //             ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
-        // }
+        #[invariant]
+        pub fn election_safety(&self) -> bool { 
+            forall |i: nat, j: nat| 
+                    i != j &&
+                    self.state.get(i) == Some(ServerState::Leader) &&
+                    self.state.get(j) == Some(ServerState::Leader)
+                    ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
+        }
 
         // need to state that: each node votes only once in its term
         //                     between the sets of nodes of the same term there can only be one
@@ -576,7 +577,14 @@ tokenized_state_machine!{
         // into individual functions, with prerequisites that match those in TLA
         
         #[inductive(update_term)]
-        fn update_term_inductive(pre: Self, post: Self, i: nat, m: RaftMessage) { }
+        fn update_term_inductive(pre: Self, post: Self, i: nat, m: RaftMessage) {
+            // election_safety proof, just enough to make verus understand that the rest of
+            // current_term is not affected, and knowing that ServerState becomes follower it is
+            // able to finish the proof automatically
+            assert forall |x: nat| 
+                x != i implies pre.current_term.get(x) == post.current_term.get(x)   
+            by{};
+        }
 
         transition!{
             // the update_term transition is triggered when *any* message arrives with a more
