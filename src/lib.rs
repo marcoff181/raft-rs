@@ -166,38 +166,32 @@ pub struct LogEntry {
     // the proof is not concerned with the actual values inside the log
     pub item: (),
 }
-
-pub enum RaftMessage
-{
-    AppendEntriesRequest {
-        src: nat,
-        dest: nat,
-        term: nat,
+pub enum RaftMessageKind{
+    pub AppendEntriesRequest {
         prev_index: nat,
         prev_term: nat,
         commit_index: nat,
         entries: Seq<LogEntry>,
     },
-    AppendEntriesResponse {
-        src: nat,
-        dest: nat,
-        term: nat,
+    pub AppendEntriesResponse {
         success: bool,
         match_index: nat,
     },
-    RequestVoteRequest {
-        src: nat,
-        dest: nat,
-        term: nat,
+    pub RequestVoteRequest {
         last_log_index: nat,
         last_log_term: nat,
     },
-    RequestVoteResponse {
-        src: nat,
-        dest: nat,
-        term: nat,
+    pub RequestVoteResponse {
         vote_granted: bool,
     },
+}
+
+pub struct RaftMessage
+{
+    pub src: nat,
+    pub dest: nat,
+    pub term: nat,
+    pub kind: RaftMessageKind, 
 }
 
 pub enum ServerState {
@@ -281,13 +275,13 @@ tokenized_state_machine!{
                     ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
         }
 
-        // #[invariant]
-        // pub fn message_correctness(&self) -> bool { 
-        //     forall |m: RaftMessage|
-        //         self.messages.contains(m)
-        //         ==> #[trigger]self.servers.contains(m.src()) &&
-        //             #[trigger]self.servers.contains(m.dest()) 
-        // }
+        #[invariant]
+        pub fn message_correctness(&self) -> bool { 
+            forall |m: RaftMessage|
+                #[trigger]self.messages.contains(m)
+                ==> self.servers.contains(m.src) &&
+                    self.servers.contains(m.dest) 
+        }
 
         #[invariant]
         pub fn matching_domains(&self) -> bool { 
@@ -301,6 +295,19 @@ tokenized_state_machine!{
             &&& self.servers =~= self.voter_log.dom() 
             &&& self.servers =~= self.next_index.dom() 
             &&& self.servers =~= self.match_index.dom() 
+        }
+
+        #[invariant]
+        pub fn servers_finite(&self) -> bool { 
+            self.servers.finite()
+        }
+
+        #[invariant]
+        pub fn votes_granted(&self) -> bool { 
+            forall |i: nat|
+                #[trigger]self.votes_granted.contains_key(i)
+                ==> self.votes_granted.get(i).unwrap().finite()
+                    && self.votes_granted.get(i).unwrap().subset_of(self.servers)
         }
 
         #[invariant]
@@ -343,6 +350,25 @@ tokenized_state_machine!{
                 self.quorum.contains(i) &&
                 self.quorum.contains(j) 
                 ==> !#[trigger]i.disjoint(j)
+        }
+
+        #[invariant]
+        pub fn quorum_properties(&self) -> bool { 
+            forall |i:Set<nat>|
+                #[trigger]i.finite() &&
+                #[trigger]i.subset_of(self.servers) &&
+                #[trigger]i.len() > self.servers.len()/2
+                ==> self.quorum.contains(i)
+        }
+
+        #[invariant]
+        pub fn quorum_properties_2(&self) -> bool { 
+            forall |i:Set<nat>|
+                #[trigger]self.quorum.contains(i)
+                ==> 
+                    i.finite() &&
+                    i.subset_of(self.servers) &&
+                    i.len() > self.servers.len()/2
         }
 
 
@@ -485,6 +511,11 @@ tokenized_state_machine!{
 
         #[inductive(request_vote)]
         fn request_vote_inductive(pre: Self, post: Self, i:nat,j:nat) {
+            // message_correctness
+            assert forall |k: RaftMessage|
+                #[trigger]post.messages.contains(k) implies 
+                pre.messages.contains(k) || (k.src == i && k.dest ==j) 
+            by{}
         }
 
         transition!{
@@ -506,9 +537,12 @@ tokenized_state_machine!{
                 have log >= [j  =>  let current_log  ];
                 let last_log_index = current_log.last();
                 let last_log_term =last_log_index.term;
-                let response =RaftMessage::RequestVoteRequest{
+                let response =RaftMessage{
                     // TODO: confirm that last_log_index is correctly defined here
-                     src:i , dest:j , term : term , last_log_index:current_log.len() , last_log_term 
+                     src:i , dest:j , term : term ,
+                     kind : RaftMessageKind::RequestVoteRequest{
+                      last_log_index:current_log.len() , last_log_term 
+                     }
                 };
 
                 add messages += {response}; 
@@ -528,10 +562,12 @@ tokenized_state_machine!{
 
                 // - a leader (j) still has its votes_granted, and we know its term
                 // - j's votes_granted must be in the quorum for it to have become leader
+                // this leverages the invariant leader_has_quorum
                 assert(pre.quorum.contains(pre.votes_granted.get(j).unwrap()));
                 // - but then we also know that the votes for i are in the quorum
                 assert(pre.quorum.contains(pre.votes_granted.get(i).unwrap()));
                 // - for the same term we cannot have two nodes with vgranted in quorum because:
+
                 //      - for the same term vgranted must be disjoint between each node
                 //      - if vgrantedi and vgrantedj are disjoint then they cannot both be in
                 //      quorum
@@ -641,31 +677,13 @@ tokenized_state_machine!{
             // recent term. The message is not discarded so that it can be handled by the other
             // functions
             update_term(i:nat,m:RaftMessage){
-                let term = match m{
-                    RaftMessage::AppendEntriesRequest {
-                        term,
-                        ..
-                    }=>term,
-                    RaftMessage::AppendEntriesResponse {
-                        term,
-                        ..
-                    }=>term,
-                    RaftMessage::RequestVoteRequest {
-                        term,
-                        ..
-                    }=>term,
-                    RaftMessage::RequestVoteResponse {
-                        term,
-                        ..
-                    }=>term,
-                };
                 remove current_term -= [i => let i_term  ];
 
                 // /\ m.mterm > currentTerm[i]
-                require(term > i_term);
+                require(m.term > i_term);
                 
                 // /\ currentTerm'    = [currentTerm EXCEPT ![i] = m.mterm]
-                add current_term += [i => term];
+                add current_term += [i => m.term];
 
                 // /\ state'          = [state       EXCEPT ![i] = Follower]
                 remove state -= [ i => let _];
@@ -681,12 +699,20 @@ tokenized_state_machine!{
         }
 
         #[inductive(handle_request_vote_request)]
-        fn handle_request_vote_request_inductive(pre: Self, post: Self, m:RaftMessage) { }
+        fn handle_request_vote_request_inductive(pre: Self, post: Self, m:RaftMessage) {
+            // message_correctness
+            assert(pre.messages.contains(m));
+            assert forall |k: RaftMessage|
+                #[trigger]post.messages.contains(k) implies 
+                pre.messages.contains(k) || (m.src == k.dest && m.dest ==k.src) 
+            by{}
+        }
 
         transition!{
             handle_request_vote_request(m:RaftMessage){
                 remove messages -= { m };
-                require let  RaftMessage::RequestVoteRequest { src, dest, term, last_log_index, last_log_term } = m;
+                require let  RaftMessageKind::RequestVoteRequest { last_log_index, last_log_term } = m.kind;
+                let(src, dest, term) = (m.src,m.dest,m.term); 
 
                 have log >= [dest as nat =>  let current_log  ];
                 let my_last_log_index = current_log.last();
@@ -729,11 +755,13 @@ tokenized_state_machine!{
                 //              msource      |-> i,
                 //              mdest        |-> j],
                 //              m)
-                let response =RaftMessage::RequestVoteResponse{
+                let response =RaftMessage{
                     src : dest,
                     dest:src,
                     term: my_current_term as nat,
-                    vote_granted : grant,
+                    kind:RaftMessageKind::RequestVoteResponse{
+                        vote_granted : grant,
+                    }
                 };
 
                 add messages += {response}; 
@@ -744,56 +772,76 @@ tokenized_state_machine!{
        
         #[inductive(handle_request_vote_response)]
         fn handle_request_vote_response_inductive(pre: Self, post: Self, m:RaftMessage) { 
-            // unpack destination 
-            let msg = match m{
-                RaftMessage::RequestVoteResponse{dest,src,vote_granted,..} => Some((dest,src,vote_granted)),
+            // unpack vote_granted 
+            let kind = match m.kind{
+                RaftMessageKind::RequestVoteResponse{vote_granted} => Some(vote_granted),
                 _ => None
             };
-            assert(msg.is_some());
-            let (i,src,vote_granted) = msg.unwrap();
+            assert(kind.is_some());
+            let vote_granted = kind.unwrap();
 
-            // leader_has_quorum
+            if vote_granted{
+                let pre_votes = pre.votes_granted.get(m.dest).unwrap();
+                let post_votes = post.votes_granted.get(m.dest).unwrap();
+                assert(
+                    // expands trigger of invariant message_correctness 
+                    pre.messages.contains(m)
+                    // ==> servers.contains(m.src) ==> (2)
+
+                    && pre.quorum.contains(pre_votes) ==> pre_votes.len() > pre.servers.len()/2 
+                    // ==> (3)
+
+                    // verus can then infer that post_votes == pre_votes.insert(m.src) 
+
+                    && post_votes.finite()                      // (1)
+                    && post_votes.subset_of(pre.servers)        // (2)
+                    && post_votes.len() > pre.servers.len() / 2 // (3)
+                    // ==> quorum.contains(post_votes)
+                );
+            } // ==> leader_has_quorum
+
+
             // assert forall |j:nat|
-            //     i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
+            //     if m.dest != j{
+            //         pre.votes_granted.get(j) == post.votes_granted.get(j)
+            //     }
+            //     else{
+            //         if pre.state.get(m.dest) == Some(ServerState::Leader){
+            //             let vgi =pre.votes_granted.get(m.dest).unwrap();
+            //             pre.quorum.contains(vgi) ==> vgi.len() > pre.servers.len()/2 &&
+            //             vgi.len() > pre.servers.len()/2&&
+            //             if vote_granted{
+            //                 let mix =pre.votes_granted.get(m.dest).unwrap().insert(m.src); 
+            //                 post.votes_granted.get(m.dest).unwrap() == mix 
+            //                 && pre.servers.contains(m.src)
+            //                 && mix.finite()
+            //                 && pre.votes_granted.get(m.dest).unwrap().subset_of(pre.servers)
+            //                 && mix.subset_of(pre.servers)
+            //                 && mix.len() > pre.servers.len() / 2  
+            //             }
+            //             else{
+            //                 post.votes_granted.get(m.dest).unwrap() == pre.votes_granted.get(m.dest).unwrap()
+            //             }
+            //
+            //         }
+            //         else{
+            //             true
+            //         }
+            //     }
             // by{};
 
-            // forall |i:nat|
-            //     self.state.get(i) == Some(ServerState::Leader)
-            //     ==> #[trigger]self.quorum.contains(self.votes_granted.get(i).unwrap()) 
-
-            assert forall |j:nat|
-                if i != j{
-                    pre.votes_granted.get(j)  =~= post.votes_granted.get(j) //&&
-                    // pre.state.get(j) == post.state.get(j)
-
-                }
-                else{
-                    if pre.state.get(i) == Some(ServerState::Leader){
-                        pre.quorum.contains(pre.votes_granted.get(i).unwrap()) &&
-                        if vote_granted{
-                            post.votes_granted.get(i).unwrap() == pre.votes_granted.get(i).unwrap().insert(src) &&
-                                true
-                            //TODO: go back here and check it works now
-                            // pre.servers.contains(src)
-                            // pre.quorum.contains(pre.votes_granted.get(i).unwrap().insert(src))
-                        }
-                        else{
-                            post.votes_granted.get(i).unwrap() == pre.votes_granted.get(i).unwrap()
-                        }
-                        
-                    }
-                    else{
-                        true
-                    }
-                }
-            by{};
+            // message_correctness
+            assert forall |k: RaftMessage|
+                #[trigger]post.messages.contains(k) implies pre.messages.contains(k) 
+            by{}
         }
        
         transition!{
             handle_request_vote_response(m:RaftMessage){
                 // // /\ Discard(m)
                 remove messages -= { m };
-                require let  RaftMessage::RequestVoteResponse { src, dest, term, vote_granted } = m;
+                require let  RaftMessageKind::RequestVoteResponse {  vote_granted } = m.kind;
+                let (src, dest, term)= (m.src,m.dest,m.term);
 
                 have current_term >= [dest as nat =>  let my_current_term  ];
 
