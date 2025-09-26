@@ -772,38 +772,38 @@ tokenized_state_machine!{
 
             // the actual algorithm considers log ok which is a more restrictive condition, if we can execute the proof without it we are just
             // proving more than what we need
-            let grant = 
-                request.term == pre.current_term.get(request.dest).unwrap() 
-                // &&  log_ok
-                && (
-                    pre.voted_for.get(request.dest).unwrap() == None::<nat> 
-                    || pre.voted_for.get(request.dest).unwrap() == Some(request.src as nat)
-                ); 
-
-            let response = RaftMessage{
-                src : request.dest,
-                dest: request.src,
-                term: pre.current_term.get(request.dest).unwrap(),
-                kind:RaftMessageKind::RequestVoteResponse{
-                    vote_granted : grant,
-                }
-            }; 
-                
-            assert forall |m: RaftMessage| 
-                post.messages.contains(response) &&
-                post.messages.contains(m) &&
-                matches!(response.kind , RaftMessageKind::RequestVoteResponse{vote_granted:true}) &&
-                matches!(m.kind , RaftMessageKind::RequestVoteResponse{vote_granted:true}) &&
-                #[trigger]response.src == #[trigger]m.src &&
-                response.term == m.term 
-                implies response.dest == m.dest
-            by{ 
-                // just need to show that with all the previous conditions we aren't actually
-                // sending any votes, thanks to messages_respect_voted_for
-                if(response.dest != m.dest){
-                    assert(!grant);
-                }
-            }; // ==> vote_once_per_term 
+            // let grant = 
+            //     request.term == pre.current_term.get(request.dest).unwrap() 
+            //     // &&  log_ok
+            //     && (
+            //         pre.voted_for.get(request.dest).unwrap() == None::<nat> 
+            //         || pre.voted_for.get(request.dest).unwrap() == Some(request.src as nat)
+            //     ); 
+            //
+            // let response = RaftMessage{
+            //     src : request.dest,
+            //     dest: request.src,
+            //     term: pre.current_term.get(request.dest).unwrap(),
+            //     kind:RaftMessageKind::RequestVoteResponse{
+            //         vote_granted : grant,
+            //     }
+            // }; 
+            //
+            // assert forall |m: RaftMessage| 
+            //     post.messages.contains(response) &&
+            //     post.messages.contains(m) &&
+            //     matches!(response.kind , RaftMessageKind::RequestVoteResponse{vote_granted:true}) &&
+            //     matches!(m.kind , RaftMessageKind::RequestVoteResponse{vote_granted:true}) &&
+            //     #[trigger]response.src == #[trigger]m.src &&
+            //     response.term == m.term 
+            //     implies response.dest == m.dest
+            // by{ 
+            //     // just need to show that with all the previous conditions we aren't actually
+            //     // sending any votes, thanks to messages_respect_voted_for
+            //     if(response.dest != m.dest){
+            //         assert(!grant);
+            //     }
+            // }; // ==> vote_once_per_term 
            
         }
 
