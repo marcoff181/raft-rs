@@ -301,6 +301,16 @@ tokenized_state_machine!{
         }
 
         #[invariant]
+        pub fn votes_granted_comes_from_voted_for(&self) -> bool { 
+            forall |i:nat,j:nat|
+                self.servers.contains(i) &&
+                self.servers.contains(j) &&
+                #[trigger]self.current_term.get(j).unwrap() == #[trigger]self.current_term.get(i).unwrap() &&
+                #[trigger]self.votes_granted.get(i).unwrap().contains(j)
+                ==>  self.voted_for.get(j).unwrap() == Some(i)
+        }
+
+        #[invariant]
         pub fn message_term_bounded_by_current_term(&self) -> bool{
             forall |m: RaftMessage|
                 #[trigger]self.messages.contains(m)
@@ -512,6 +522,17 @@ tokenized_state_machine!{
             assert forall |j:nat|
                 i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
             by{} // ==> leader_has_quorum
+                 
+            
+            assert forall |j:nat|
+                post.servers.contains(i) &&
+                post.servers.contains(j) &&
+                #[trigger]post.current_term.get(j).unwrap() == #[trigger]post.current_term.get(i).unwrap() &&
+                #[trigger]post.votes_granted.get(j).unwrap().contains(i)
+                implies  post.voted_for.get(i).unwrap() == Some(j)
+            by{
+                assume(!post.votes_granted.get(j).unwrap().contains(i));
+            } // => votes_granted_comes_from_voted_for
         }
 
         transition!{
@@ -728,6 +749,16 @@ tokenized_state_machine!{
             assert forall |x: nat| 
                 x != i implies pre.current_term.get(x) == post.current_term.get(x)   
             by{};
+
+            assert forall |j:nat|
+                post.servers.contains(i) &&
+                post.servers.contains(j) &&
+                #[trigger]post.current_term.get(j).unwrap() == #[trigger]post.current_term.get(i).unwrap() &&
+                #[trigger]post.votes_granted.get(j).unwrap().contains(i)
+                implies  post.voted_for.get(i).unwrap() == Some(j)
+            by{
+                assume(!post.votes_granted.get(j).unwrap().contains(i));
+            }
         }
 
         transition!{
@@ -889,67 +920,47 @@ tokenized_state_machine!{
                     && post_votes.len() > pre.servers.len() / 2 // (3)
                     // ==> quorum.contains(post_votes)
                 );
-            } // ==> inv. leader_has_quorum
-
-
-            // assert forall |j:nat|
-            //     if m.dest != j{
-            //         pre.votes_granted.get(j) == post.votes_granted.get(j)
-            //     }
-            //     else{
-            //         if pre.state.get(m.dest) == Some(ServerState::Leader){
-            //             let vgi =pre.votes_granted.get(m.dest).unwrap();
-            //             pre.quorum.contains(vgi) ==> vgi.len() > pre.servers.len()/2 &&
-            //             vgi.len() > pre.servers.len()/2&&
-            //             if vote_granted{
-            //                 let mix =pre.votes_granted.get(m.dest).unwrap().insert(m.src); 
-            //                 post.votes_granted.get(m.dest).unwrap() == mix 
-            //                 && pre.servers.contains(m.src)
-            //                 && mix.finite()
-            //                 && pre.votes_granted.get(m.dest).unwrap().subset_of(pre.servers)
-            //                 && mix.subset_of(pre.servers)
-            //                 && mix.len() > pre.servers.len() / 2  
-            //             }
-            //             else{
-            //                 post.votes_granted.get(m.dest).unwrap() == pre.votes_granted.get(m.dest).unwrap()
-            //             }
-            //
-            //         }
-            //         else{
-            //             true
-            //         }
-            //     }
-            // by{};
-
+            } // ==> leader_has_quorum
 
             assert forall |k: RaftMessage|
                 #[trigger]post.messages.contains(k) implies pre.messages.contains(k) 
-            by{} // ==> inv. message_correctness
+            by{} // ==> message_correctness
 
-            // when the vote has been registered
+            // uses trigger of votes_granted to show that servers.contains(m.src) ==>
+            // votes_granted.get(i).subset_of(servers)
+            assert(pre.messages.contains(m)); // ==> votes_granted
+
+            //just to remember that we are working just with this case in the proof
             if vote_granted{
                 assert(post.votes_granted.get(m.dest).unwrap() == pre.votes_granted.get(m.dest).unwrap().insert(m.src));
-            };
 
-            assert forall |j:nat|
-                j != m.dest &&
-                #[trigger]post.votes_granted.contains_key(j) &&
-                #[trigger]post.current_term.get(m.dest).unwrap() == #[trigger]post.current_term.get(j).unwrap()
-                implies post.votes_granted.get(m.dest).unwrap().disjoint(post.votes_granted.get(j).unwrap()) 
-            by{
-                // assert(post.votes_granted.get(m.dest).unwrap().is_empty());
-                assert(post.votes_granted.get(j).unwrap() == pre.votes_granted.get(j).unwrap());
+                assert forall |j:nat|
+                    j != m.dest &&
+                    // j != m.src &&
+                    #[trigger]post.votes_granted.contains_key(m.dest) &&
+                    #[trigger]post.votes_granted.contains_key(j) &&
+                    #[trigger]post.current_term.get(m.dest).unwrap() == #[trigger]post.current_term.get(j).unwrap()
+                    implies post.votes_granted.get(m.dest).unwrap().disjoint(post.votes_granted.get(j).unwrap()) 
+                by{
 
-                assume(!post.votes_granted.get(j).unwrap().contains(m.src));
-            }; // ==> votes_granted
+                    if(pre.votes_granted.get(j).unwrap().contains(m.src)){
+                        // we also know that  post.votes_granted.get(m.dest).unwrap().contains(m.src)
 
+                        // IF those two messages we got came during same term (yes otherwise would
+                        // not have added them to votes_granted)
+                        // this means that ==>  pre.voted_for.get(m.src).unwrap() == Some(j)
+                        // this means that ==>  pre.voted_for.get(m.src).unwrap() == Some(m.dest)
 
+                        assert( post.votes_granted.get(m.dest).unwrap().contains(m.src));
+                    };
 
-            // pub fn votes_granted(&self) -> bool { 
-            //     forall |i: nat|
-            //         #[trigger]self.votes_granted.contains_key(i)
-            //         ==> self.votes_granted.get(i).unwrap().finite()
-            //             && self.votes_granted.get(i).unwrap().subset_of(self.servers)
+                    assume(!pre.votes_granted.get(j).unwrap().contains(m.src));
+                }; // ==> votes_granted
+            }
+            // else{
+            //     assert(post.votes_granted.get(m.dest).unwrap() == pre.votes_granted.get(m.dest).unwrap());
+            // };
+
         }
        
         transition!{
