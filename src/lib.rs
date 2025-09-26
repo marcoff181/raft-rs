@@ -275,6 +275,39 @@ tokenized_state_machine!{
                     ==> #[trigger] self.current_term.get(i) != #[trigger] self.current_term.get(j)
         }
 
+        // a node votes one leader per term, which means that if two messages have same src and
+        // term, they are simply a  duplicate of the vote for the same candidate(m.dest) 
+        #[invariant]
+        pub fn vote_once_per_term(&self) -> bool { 
+            forall |m1: RaftMessage, m2: RaftMessage| 
+                self.messages.contains(m1) &&
+                self.messages.contains(m2) &&
+                matches!(m1.kind , RaftMessageKind::RequestVoteResponse{vote_granted: true}) &&
+                matches!(m2.kind , RaftMessageKind::RequestVoteResponse{vote_granted: true}) &&
+                #[trigger]m1.src == #[trigger]m2.src &&
+                #[trigger]m1.term == #[trigger]m2.term 
+                ==> m1.dest == m2.dest
+        }
+
+        // given that we are talking about the current term, if there is a message for a vote, then
+        // the voted_for variable agrees with that message
+        #[invariant]
+        pub fn messages_respect_voted_for(&self) -> bool { 
+            forall |m: RaftMessage|
+                #[trigger]self.messages.contains(m) &&
+                #[trigger]m.term == self.current_term.get(m.src).unwrap() &&
+                #[trigger]matches!(m.kind , RaftMessageKind::RequestVoteResponse{vote_granted: true}) 
+                ==>  self.voted_for.get(m.src).unwrap() == Some(m.dest)
+        }
+
+        #[invariant]
+        pub fn message_term_bounded_by_current_term(&self) -> bool{
+            forall |m: RaftMessage|
+                #[trigger]self.messages.contains(m)
+                ==>
+                #[trigger]m.term <= self.current_term.get(m.src).unwrap()
+        }
+
         #[invariant]
         pub fn message_correctness(&self) -> bool { 
             forall |m: RaftMessage|
@@ -317,10 +350,17 @@ tokenized_state_machine!{
                 ==> #[trigger]self.quorum.contains(self.votes_granted.get(i).unwrap()) 
         }
 
-        // need to state that: each node votes only once in its term
-        //                     between the sets of nodes of the same term there can only be one
-        //                     with quorum 
-        
+        #[invariant]
+        pub fn vgranted_disjoint(&self) -> bool { 
+            forall |i:nat,j:nat|
+                i != j &&
+                #[trigger]self.votes_granted.contains_key(i) &&
+                #[trigger]self.votes_granted.contains_key(j) &&
+                #[trigger]self.current_term.get(i).unwrap() == #[trigger]self.current_term.get(j).unwrap()
+                //TODO: maybe remove unwrap
+                ==> self.votes_granted.get(i).unwrap().disjoint(self.votes_granted.get(j).unwrap()) 
+        }
+
         // #[invariant]
         // pub fn votes_granted_disjoint(&self) -> bool { 
         //     forall |i:nat,j:nat|
@@ -346,9 +386,10 @@ tokenized_state_machine!{
         #[invariant]
         pub fn quorum_intersects(&self) -> bool { 
             forall |i:Set<nat>,j:Set<nat>|
+                // #![auto]  
                 i != j &&
-                self.quorum.contains(i) &&
-                self.quorum.contains(j) 
+                #[trigger]self.quorum.contains(i) &&
+                #[trigger]self.quorum.contains(j) 
                 ==> !#[trigger]i.disjoint(j)
         }
 
@@ -410,8 +451,6 @@ tokenized_state_machine!{
                 init messages = Multiset::empty();
                 init elections = Map::empty();
                 init allLogs = Map::empty();
-                // TODO: maybe for verification purposes building sets from empty and then adding
-                // items has better guarantees
                 init current_term = Map::new(|i:nat| servers has i , |i:nat| 1);
                 init state = Map::new(|i:nat| servers has i, |i:nat| ServerState::Follower);
                 init voted_for = Map::new(|i:nat| servers has i, |i:nat| None);
@@ -424,7 +463,6 @@ tokenized_state_machine!{
                 init match_index = Map::new(|i:nat| servers has i, |i:nat| Map::new(|j:nat| servers has j, |j:nat| 0));
             }
         }
-        // TODO: add advanced term logic
 
         #[inductive(restart)]
         fn restart_inductive(pre: Self, post: Self, i: nat) { 
@@ -465,16 +503,15 @@ tokenized_state_machine!{
 
         #[inductive(timeout)]
         fn timeout_inductive(pre: Self, post: Self, i: nat) { 
-            // election_safety
             assert(forall |j: nat| 
                 pre.state.get(j) == Some(ServerState::Leader) 
                 ==> post.state.get(j) == Some(ServerState::Leader) &&
-                    pre.current_term.get(j) ==  post.current_term.get(j));
+                    pre.current_term.get(j) ==  post.current_term.get(j)
+            ); // ==> election_safety
 
-            // leader_has_quorum
             assert forall |j:nat|
                 i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
-            by{};
+            by{} // ==> leader_has_quorum
         }
 
         transition!{
@@ -560,14 +597,35 @@ tokenized_state_machine!{
                     implies #[trigger] pre.current_term.get(i) != #[trigger] pre.current_term.get(j) 
             by{
 
-                // - a leader (j) still has its votes_granted, and we know its term
-                // - j's votes_granted must be in the quorum for it to have become leader
-                // this leverages the invariant leader_has_quorum
-                assert(pre.quorum.contains(pre.votes_granted.get(j).unwrap()));
-                // - but then we also know that the votes for i are in the quorum
-                assert(pre.quorum.contains(pre.votes_granted.get(i).unwrap()));
-                // - for the same term we cannot have two nodes with vgranted in quorum because:
+                let vgi = pre.votes_granted.get(i).unwrap();
+                let vgj = pre.votes_granted.get(j).unwrap();
 
+
+
+
+                if(post.current_term.get(i).unwrap() == post.current_term.get(j).unwrap()){
+
+                    assert( post.votes_granted.contains_key(i));
+                    assert( post.votes_granted.contains_key(i));
+                    assert(vgi.disjoint(vgj));
+                    assert(!vgj.contains(vgi.choose()));
+                    // assert(post.current_term.get(i).unwrap() != post.current_term.get(j).unwrap());
+
+                    // - a leader (j) still has its votes_granted, and we know its term
+                    // - j's votes_granted must be in the quorum for it to have become leader
+                    // this leverages the invariant leader_has_quorum
+                    assert(post.quorum.contains(vgj));
+                    // - but then we also know that the votes for i are in the quorum
+                    assert(post.quorum.contains(vgi));
+                    // - for the same term we cannot have two nodes with vgranted in quorum because:
+                    assert(vgi != vgj);
+                    assert(!vgi.disjoint(vgj));
+
+                    // i != j &&
+                    // self.quorum.contains(i) &&
+                    // self.quorum.contains(j) 
+                    // ==> !#[trigger]i.disjoint(j)
+                }
                 //      - for the same term vgranted must be disjoint between each node
                 //      - if vgrantedi and vgrantedj are disjoint then they cannot both be in
                 //      quorum
@@ -693,26 +751,67 @@ tokenized_state_machine!{
                 remove voted_for -= [ i => let _];
                 add voted_for += [ i => None];
 
+                // TODO: not in the TLA spec but seems necessary, needs confirmation
+                remove votes_granted -= [ i => let _];
+                add votes_granted += [ i => Set::empty()];
+
                 //    \* messages is unchanged so m can be processed further.
                 // /\ UNCHANGED <<messages, candidateVars, leaderVars, logVars>>
             }
         }
 
         #[inductive(handle_request_vote_request)]
-        fn handle_request_vote_request_inductive(pre: Self, post: Self, m:RaftMessage) {
-            // message_correctness
-            assert(pre.messages.contains(m));
-            assert forall |k: RaftMessage|
-                #[trigger]post.messages.contains(k) implies 
-                pre.messages.contains(k) || (m.src == k.dest && m.dest ==k.src) 
-            by{}
+        fn handle_request_vote_request_inductive(pre: Self, post: Self, request:RaftMessage) {
+            assert(pre.messages.contains(request));
+            assert forall |m: RaftMessage|
+                #[trigger]post.messages.contains(m) 
+                implies pre.messages.contains(m) || 
+                        (request.src == m.dest && request.dest ==m.src) 
+            by{}// ==> message_correctness
+
+
+            // the actual algorithm considers log ok which is a more restrictive condition, if we can execute the proof without it we are just
+            // proving more than what we need
+            let grant = 
+                request.term == pre.current_term.get(request.dest).unwrap() 
+                // &&  log_ok
+                && (
+                    pre.voted_for.get(request.dest).unwrap() == None::<nat> 
+                    || pre.voted_for.get(request.dest).unwrap() == Some(request.src as nat)
+                ); 
+
+            let response = RaftMessage{
+                src : request.dest,
+                dest: request.src,
+                term: pre.current_term.get(request.dest).unwrap(),
+                kind:RaftMessageKind::RequestVoteResponse{
+                    vote_granted : grant,
+                }
+            }; 
+                
+            assert forall |m: RaftMessage| 
+                post.messages.contains(response) &&
+                post.messages.contains(m) &&
+                matches!(response.kind , RaftMessageKind::RequestVoteResponse{vote_granted:true}) &&
+                matches!(m.kind , RaftMessageKind::RequestVoteResponse{vote_granted:true}) &&
+                #[trigger]response.src == #[trigger]m.src &&
+                response.term == m.term 
+                implies response.dest == m.dest
+            by{ 
+                // just need to show that with all the previous conditions we aren't actually
+                // sending any votes, thanks to messages_respect_voted_for
+                if(response.dest != m.dest){
+                    assert(!grant);
+                }
+            }; // ==> vote_once_per_term 
+           
         }
 
         transition!{
-            handle_request_vote_request(m:RaftMessage){
-                remove messages -= { m };
-                require let  RaftMessageKind::RequestVoteRequest { last_log_index, last_log_term } = m.kind;
-                let(src, dest, term) = (m.src,m.dest,m.term); 
+            handle_request_vote_request(request:RaftMessage){
+                remove messages -= { request };
+                require let  RaftMessageKind::RequestVoteRequest { last_log_index, last_log_term } = request.kind;
+                let(src, dest, term) = (request.src,request.dest,request.term); 
 
                 have log >= [dest as nat =>  let current_log  ];
                 let my_last_log_index = current_log.last();
@@ -720,7 +819,7 @@ tokenized_state_machine!{
                 let my_last_log_term = my_last_log_index.term;
                 remove voted_for -= [dest as nat =>  let i_voted_for  ];
 
-                // LET logOk == \/ m.mlastLogTerm > LastTerm(log[i])
+                // let logok == \/ m.mlastlogTerm > LastTerm(log[i])
                 //              \/ /\ m.mlastLogTerm = LastTerm(log[i])
                 //                 /\ m.mlastLogIndex >= Len(log[i])
                 let log_ok = last_log_term > my_last_log_term 
@@ -733,7 +832,6 @@ tokenized_state_machine!{
                         &&  log_ok
                         && (i_voted_for == None::<nat> || i_voted_for == Some(src as nat)); 
 
-                // TODO: confirm this makes sense
                 // IN /\ m.mterm <= currentTerm[i]
                 require(term <= my_current_term);
 
@@ -772,14 +870,7 @@ tokenized_state_machine!{
        
         #[inductive(handle_request_vote_response)]
         fn handle_request_vote_response_inductive(pre: Self, post: Self, m:RaftMessage) { 
-            // unpack vote_granted 
-            let kind = match m.kind{
-                RaftMessageKind::RequestVoteResponse{vote_granted} => Some(vote_granted),
-                _ => None
-            };
-            assert(kind.is_some());
-            let vote_granted = kind.unwrap();
-
+            let vote_granted = match m.kind{ RaftMessageKind::RequestVoteResponse{vote_granted} => Some(vote_granted), _ => None }.unwrap();
             if vote_granted{
                 let pre_votes = pre.votes_granted.get(m.dest).unwrap();
                 let post_votes = post.votes_granted.get(m.dest).unwrap();
@@ -798,7 +889,7 @@ tokenized_state_machine!{
                     && post_votes.len() > pre.servers.len() / 2 // (3)
                     // ==> quorum.contains(post_votes)
                 );
-            } // ==> leader_has_quorum
+            } // ==> inv. leader_has_quorum
 
 
             // assert forall |j:nat|
@@ -830,10 +921,35 @@ tokenized_state_machine!{
             //     }
             // by{};
 
-            // message_correctness
+
             assert forall |k: RaftMessage|
                 #[trigger]post.messages.contains(k) implies pre.messages.contains(k) 
-            by{}
+            by{} // ==> inv. message_correctness
+
+            // when the vote has been registered
+            if vote_granted{
+                assert(post.votes_granted.get(m.dest).unwrap() == pre.votes_granted.get(m.dest).unwrap().insert(m.src));
+            };
+
+            assert forall |j:nat|
+                j != m.dest &&
+                #[trigger]post.votes_granted.contains_key(j) &&
+                #[trigger]post.current_term.get(m.dest).unwrap() == #[trigger]post.current_term.get(j).unwrap()
+                implies post.votes_granted.get(m.dest).unwrap().disjoint(post.votes_granted.get(j).unwrap()) 
+            by{
+                // assert(post.votes_granted.get(m.dest).unwrap().is_empty());
+                assert(post.votes_granted.get(j).unwrap() == pre.votes_granted.get(j).unwrap());
+
+                assume(!post.votes_granted.get(j).unwrap().contains(m.src));
+            }; // ==> votes_granted
+
+
+
+            // pub fn votes_granted(&self) -> bool { 
+            //     forall |i: nat|
+            //         #[trigger]self.votes_granted.contains_key(i)
+            //         ==> self.votes_granted.get(i).unwrap().finite()
+            //             && self.votes_granted.get(i).unwrap().subset_of(self.servers)
         }
        
         transition!{
