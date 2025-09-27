@@ -292,16 +292,6 @@ tokenized_state_machine!{
                 ==> m1.dest == m2.dest
         }
 
-        // #[invariant]
-        // pub fn votes_granted_comes_from_voted_for(&self) -> bool { 
-        //     forall |i:nat,j:nat|
-        //         self.servers.contains(i) &&
-        //         self.servers.contains(j) &&
-        //         #[trigger]self.current_term.get(j).unwrap() == #[trigger]self.current_term.get(i).unwrap() &&
-        //         #[trigger]self.votes_granted.get(i).unwrap().contains(j)
-        //         ==>  self.voted_for.get(j).unwrap() == Some(i)
-        // }
-
         // if votes_granted has an entry, then it came from a message, with corresponding src and
         // dest, of the same term, and with vote_granted true
         #[invariant]
@@ -383,7 +373,6 @@ tokenized_state_machine!{
                 #[trigger]self.votes_granted.contains_key(i) &&
                 #[trigger]self.votes_granted.contains_key(j) &&
                 #[trigger]self.current_term.get(i).unwrap() == #[trigger]self.current_term.get(j).unwrap()
-                //TODO: maybe remove unwrap
                 ==> self.votes_granted.get(i).unwrap().disjoint(self.votes_granted.get(j).unwrap()) 
         }
 
@@ -541,17 +530,6 @@ tokenized_state_machine!{
             assert forall |j:nat|
                 i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
             by{} // ==> leader_has_quorum
-                 
-            
-            assert forall |j:nat|
-                post.servers.contains(i) &&
-                post.servers.contains(j) &&
-                #[trigger]post.current_term.get(j).unwrap() == #[trigger]post.current_term.get(i).unwrap() &&
-                #[trigger]post.votes_granted.get(j).unwrap().contains(i)
-                implies  post.voted_for.get(i).unwrap() == Some(j)
-            by{
-                assume(!post.votes_granted.get(j).unwrap().contains(i));
-            } // => votes_granted_comes_from_voted_for
         }
 
         transition!{
@@ -739,7 +717,7 @@ tokenized_state_machine!{
         //                      Message-Based transitions
         // -----------------------------------------------------------------------------------
 
-        // The TLA handles message receiving logic like this:
+        // The TLA spec handles message receiving logic like this:
         //
         // Receive(m) ==
         //     LET i == m.mdest
@@ -768,16 +746,6 @@ tokenized_state_machine!{
             assert forall |x: nat| 
                 x != i implies pre.current_term.get(x) == post.current_term.get(x)   
             by{};
-
-            assert forall |j:nat|
-                post.servers.contains(i) &&
-                post.servers.contains(j) &&
-                #[trigger]post.current_term.get(j).unwrap() == #[trigger]post.current_term.get(i).unwrap() &&
-                #[trigger]post.votes_granted.get(j).unwrap().contains(i)
-                implies  post.voted_for.get(i).unwrap() == Some(j)
-            by{
-                assume(!post.votes_granted.get(j).unwrap().contains(i));
-            }
         }
 
         transition!{
@@ -818,43 +786,6 @@ tokenized_state_machine!{
                 implies pre.messages.contains(m) || 
                         (request.src == m.dest && request.dest ==m.src) 
             by{}// ==> message_correctness
-
-
-            // the actual algorithm considers log ok which is a more restrictive condition, if we can execute the proof without it we are just
-            // proving more than what we need
-            // let grant = 
-            //     request.term == pre.current_term.get(request.dest).unwrap() 
-            //     // &&  log_ok
-            //     && (
-            //         pre.voted_for.get(request.dest).unwrap() == None::<nat> 
-            //         || pre.voted_for.get(request.dest).unwrap() == Some(request.src as nat)
-            //     ); 
-            //
-            // let response = RaftMessage{
-            //     src : request.dest,
-            //     dest: request.src,
-            //     term: pre.current_term.get(request.dest).unwrap(),
-            //     kind:RaftMessageKind::RequestVoteResponse{
-            //         vote_granted : grant,
-            //     }
-            // }; 
-            //
-            // assert forall |m: RaftMessage| 
-            //     post.messages.contains(response) &&
-            //     post.messages.contains(m) &&
-            //     matches!(response.kind , RaftMessageKind::RequestVoteResponse{vote_granted:true}) &&
-            //     matches!(m.kind , RaftMessageKind::RequestVoteResponse{vote_granted:true}) &&
-            //     #[trigger]response.src == #[trigger]m.src &&
-            //     response.term == m.term 
-            //     implies response.dest == m.dest
-            // by{ 
-            //     // just need to show that with all the previous conditions we aren't actually
-            //     // sending any votes, thanks to messages_respect_voted_for
-            //     if(response.dest != m.dest){
-            //         assert(!grant);
-            //     }
-            // }; // ==> vote_once_per_term 
-           
         }
 
         transition!{
