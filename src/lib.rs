@@ -921,6 +921,7 @@ tokenized_state_machine!{
         #[inductive(handle_request_vote_response)]
         fn handle_request_vote_response_inductive(pre: Self, post: Self, m:RaftMessage) { 
             let vote_granted = match m.kind{ RaftMessageKind::RequestVoteResponse{vote_granted} => Some(vote_granted), _ => None }.unwrap();
+
             if vote_granted{
                 let pre_votes = pre.votes_granted.get(m.dest).unwrap();
                 let post_votes = post.votes_granted.get(m.dest).unwrap();
@@ -938,21 +939,9 @@ tokenized_state_machine!{
                     && post_votes.subset_of(pre.servers)        // (2)
                     && post_votes.len() > pre.servers.len() / 2 // (3)
                     // ==> quorum.contains(post_votes)
-                );
-            } // ==> leader_has_quorum
+                ); // ==> leader_has_quorum
 
-            assert forall |k: RaftMessage|
-                #[trigger]post.messages.contains(k) implies pre.messages.contains(k) 
-            by{} // ==> message_correctness
-
-            // uses trigger of votes_granted to show that servers.contains(m.src) ==>
-            // votes_granted.get(i).subset_of(servers)
-            assert(pre.messages.contains(m)); // ==> votes_granted
-
-            //just to remember that we are working just with this case in the proof
-            if vote_granted{
-                // in this case we know that post.votes_granted.get(m.dest) == pre.votes_granted.get(m.dest).insert(m.src)
-
+                // the vote has been granted so we know that post.votes_granted.get(m.dest) == pre.votes_granted.get(m.dest).insert(m.src)
                 assert forall |j:nat|
                     j != m.dest &&
                     #[trigger]post.votes_granted.contains_key(m.dest) &&
@@ -982,8 +971,8 @@ tokenized_state_machine!{
                         // there cannot be two messages that grant a vote with same src and term but
                         // different dest
                     };
-                }; 
-            }// ==> vgranted_disjoint 
+                };// ==> vgranted_disjoint  
+            }
         }
        
         transition!{
