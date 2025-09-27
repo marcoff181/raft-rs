@@ -292,25 +292,38 @@ tokenized_state_machine!{
                 ==> m1.dest == m2.dest
         }
 
+        // #[invariant]
+        // pub fn votes_granted_comes_from_voted_for(&self) -> bool { 
+        //     forall |i:nat,j:nat|
+        //         self.servers.contains(i) &&
+        //         self.servers.contains(j) &&
+        //         #[trigger]self.current_term.get(j).unwrap() == #[trigger]self.current_term.get(i).unwrap() &&
+        //         #[trigger]self.votes_granted.get(i).unwrap().contains(j)
+        //         ==>  self.voted_for.get(j).unwrap() == Some(i)
+        // }
+
+        // if votes_granted has an entry, then it came from a message, with corresponding src and
+        // dest, of the same term, and with vote_granted true
+        #[invariant]
+        pub fn votes_granted_comes_from_message(&self) -> bool { 
+            forall |m: RaftMessage|
+                self.servers.contains(m.src) &&
+                self.servers.contains(m.dest) &&
+                #[trigger]m.term == #[trigger]self.current_term.get(m.dest).unwrap() &&
+                #[trigger]matches!(m.kind , RaftMessageKind::RequestVoteResponse{vote_granted: true}) &&
+                self.votes_granted.get(#[trigger]m.dest).unwrap().contains(#[trigger]m.src)
+                ==>  self.messages.contains(m)
+        }
+
         // given that we are talking about the current term, if there is a message for a vote, then
         // the voted_for variable agrees with that message
         #[invariant]
-        pub fn messages_respect_voted_for(&self) -> bool { 
+        pub fn messages_comes_from_voted_for(&self) -> bool { 
             forall |m: RaftMessage|
                 #[trigger]self.messages.contains(m) &&
                 #[trigger]m.term == self.current_term.get(m.src).unwrap() &&
                 #[trigger]matches!(m.kind , RaftMessageKind::RequestVoteResponse{vote_granted: true}) 
                 ==>  self.voted_for.get(m.src).unwrap() == Some(m.dest)
-        }
-
-        #[invariant]
-        pub fn votes_granted_comes_from_voted_for(&self) -> bool { 
-            forall |i:nat,j:nat|
-                self.servers.contains(i) &&
-                self.servers.contains(j) &&
-                #[trigger]self.current_term.get(j).unwrap() == #[trigger]self.current_term.get(i).unwrap() &&
-                #[trigger]self.votes_granted.get(i).unwrap().contains(j)
-                ==>  self.voted_for.get(j).unwrap() == Some(i)
         }
 
         #[invariant]
@@ -429,7 +442,6 @@ tokenized_state_machine!{
         #[inductive(initialize)]
         fn initialize_inductive(post: Self, servers: Set<nat>) 
         {
-            // proof for `quorum_intersects` 
             assert forall |i:Set<nat>,j:Set<nat>|  
                 i != j &&
                 post.quorum.contains(i) &&
@@ -447,7 +459,11 @@ tokenized_state_machine!{
                     vstd::set_lib::lemma_set_disjoint_lens(i,j);
                     assert(i.union(j).len() > post.servers.len());
                 }
-            }
+            }// ==> quorum_intersects
+
+            
+
+
         }
 
         init!{
@@ -935,35 +951,39 @@ tokenized_state_machine!{
 
             //just to remember that we are working just with this case in the proof
             if vote_granted{
-                assert(post.votes_granted.get(m.dest).unwrap() == pre.votes_granted.get(m.dest).unwrap().insert(m.src));
+                // in this case we know that post.votes_granted.get(m.dest) == pre.votes_granted.get(m.dest).insert(m.src)
 
                 assert forall |j:nat|
                     j != m.dest &&
-                    // j != m.src &&
                     #[trigger]post.votes_granted.contains_key(m.dest) &&
                     #[trigger]post.votes_granted.contains_key(j) &&
                     #[trigger]post.current_term.get(m.dest).unwrap() == #[trigger]post.current_term.get(j).unwrap()
-                    implies post.votes_granted.get(m.dest).unwrap().disjoint(post.votes_granted.get(j).unwrap()) 
+                    // this implication is enough to prove the disjointedness, as m.src is the ony
+                    // element added in this transition
+                    implies !post.votes_granted.get(j).unwrap().contains(m.src) 
                 by{
+                    if(post.votes_granted.get(j).unwrap().contains(m.src)){
+                        // this means that using votes_granted_comes_from_message we can build its
+                        // corresponding message and assert that it is contanined in messages
+                        let m2 =RaftMessage{
+                            src:m.src,
+                            dest:j,
+                            term:m.term,
+                            kind:RaftMessageKind::RequestVoteResponse {  vote_granted }
+                        };
+                        assert(m2.term == post.current_term.get(m2.dest).unwrap());
+                        assert(post.messages.contains(m2));
 
-                    if(pre.votes_granted.get(j).unwrap().contains(m.src)){
-                        // we also know that  post.votes_granted.get(m.dest).unwrap().contains(m.src)
+                        // we also know about the message m we just received, which also now has
+                        // been inserted in votes granted
                         assert( post.votes_granted.get(m.dest).unwrap().contains(m.src));
-
-                        // IF those two messages we got came during same term (yes otherwise would
-                        // not have added them to votes_granted)
-                        // this means that ==>  pre.voted_for.get(m.src).unwrap() == Some(j)
-                        // this means that ==>  pre.voted_for.get(m.src).unwrap() == Some(m.dest)
-
+                        
+                        // and here we arrive at the contradiction, vote_once_per_term says that
+                        // there cannot be two messages that grant a vote with same src and term but
+                        // different dest
                     };
-
-                    assume(!pre.votes_granted.get(j).unwrap().contains(m.src));
-                }; // ==> votes_granted
-            }
-            // else{
-            //     assert(post.votes_granted.get(m.dest).unwrap() == pre.votes_granted.get(m.dest).unwrap());
-            // };
-
+                }; 
+            }// ==> vgranted_disjoint 
         }
        
         transition!{
