@@ -204,8 +204,11 @@ pub enum ServerState {
 tokenized_state_machine!{
     RAFT{
         fields{
-            #[sharding(multiset)]
-            pub messages: Multiset<RaftMessage>,
+            // messages are kept forever, message duplication is modeled by the fact that you could
+            // pick a message multiple times, message loss by the fact that you could never
+            // pick a certain message
+            #[sharding(persistent_set)]
+            pub messages: Set<RaftMessage>,
 
             #[sharding(constant)]
             pub servers: Set<nat>,
@@ -458,7 +461,7 @@ tokenized_state_machine!{
                 init quorum = Set::new(|s: Set<nat>|   
                     s.subset_of(servers) && s.finite() && s.len() > servers.len() / 2  
                 );
-                init messages = Multiset::empty();
+                init messages = Set::empty();
                 init elections = Map::empty();
                 init allLogs = Map::empty();
                 init current_term = Map::new(|i:nat| servers has i , |i:nat| 1);
@@ -603,7 +606,7 @@ tokenized_state_machine!{
                      }
                 };
 
-                add messages += {response}; 
+                add messages (union)= set{response}; 
 
                 // /\ UNCHANGED <<serverVars, candidateVars, leaderVars, logVars>>
             }
@@ -840,7 +843,7 @@ tokenized_state_machine!{
 
         transition!{
             handle_request_vote_request(request:RaftMessage){
-                remove messages -= { request };
+                have messages >= set{request} ;
                 require let  RaftMessageKind::RequestVoteRequest { last_log_index, last_log_term } = request.kind;
                 let(src, dest, term) = (request.src,request.dest,request.term); 
 
@@ -893,7 +896,7 @@ tokenized_state_machine!{
                     }
                 };
 
-                add messages += {response}; 
+                add messages (union)= set{response}; 
                 //    /\ UNCHANGED <<state, currentTerm, candidateVars, leaderVars, logVars>>
             }
         }
@@ -945,13 +948,13 @@ tokenized_state_machine!{
 
                     if(pre.votes_granted.get(j).unwrap().contains(m.src)){
                         // we also know that  post.votes_granted.get(m.dest).unwrap().contains(m.src)
+                        assert( post.votes_granted.get(m.dest).unwrap().contains(m.src));
 
                         // IF those two messages we got came during same term (yes otherwise would
                         // not have added them to votes_granted)
                         // this means that ==>  pre.voted_for.get(m.src).unwrap() == Some(j)
                         // this means that ==>  pre.voted_for.get(m.src).unwrap() == Some(m.dest)
 
-                        assert( post.votes_granted.get(m.dest).unwrap().contains(m.src));
                     };
 
                     assume(!pre.votes_granted.get(j).unwrap().contains(m.src));
@@ -966,7 +969,7 @@ tokenized_state_machine!{
         transition!{
             handle_request_vote_response(m:RaftMessage){
                 // // /\ Discard(m)
-                remove messages -= { m };
+                have messages >= set{m};
                 require let  RaftMessageKind::RequestVoteResponse {  vote_granted } = m.kind;
                 let (src, dest, term)= (m.src,m.dest,m.term);
 
