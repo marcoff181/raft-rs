@@ -709,11 +709,11 @@ tokenized_state_machine!{
                 require let  RaftMessageKind::RequestVoteRequest { last_log_index, last_log_term } = request.kind;
                 let(src, dest, term) = (request.src,request.dest,request.term); 
 
-                have log >= [dest as nat =>  let current_log  ];
+                have log >= [dest =>  let current_log  ];
                 let my_last_log_index = current_log.last();
-                have current_term >= [dest as nat =>  let my_current_term  ];
+                have current_term >= [dest =>  let my_current_term  ];
                 let my_last_log_term = my_last_log_index.term;
-                remove voted_for -= [dest as nat =>  let i_voted_for  ];
+                remove voted_for -= [dest =>  let i_voted_for  ];
 
                 // let logok == \/ m.mlastlogTerm > LastTerm(log[i])
                 //              \/ /\ m.mlastLogTerm = LastTerm(log[i])
@@ -726,7 +726,7 @@ tokenized_state_machine!{
                 //              /\ votedFor[i] \in {Nil, j}
                 let grant = term == my_current_term
                         &&  log_ok
-                        && (i_voted_for == None::<nat> || i_voted_for == Some(src as nat)); 
+                        && (i_voted_for == None::<nat> || i_voted_for == Some(src)); 
 
                 // IN /\ m.mterm <= currentTerm[i]
                 require(term <= my_current_term);
@@ -735,10 +735,10 @@ tokenized_state_machine!{
                 //       \/ ~grant /\ UNCHANGED votedFor
                 let updated_voted_for = 
                 match grant{
-                    true => Some(src as nat),
+                    true => Some(src),
                     false => i_voted_for
                 };
-                add voted_for += [dest as nat => updated_voted_for]; 
+                add voted_for += [dest => updated_voted_for]; 
 
                 //    /\ Reply([mtype        |-> RequestVoteResponse,
                 //              mterm        |-> currentTerm[i],
@@ -752,7 +752,7 @@ tokenized_state_machine!{
                 let response =RaftMessage{
                     src : dest,
                     dest:src,
-                    term: my_current_term as nat,
+                    term: my_current_term,
                     kind:RaftMessageKind::RequestVoteResponse{
                         vote_granted : grant,
                     }
@@ -827,7 +827,7 @@ tokenized_state_machine!{
                 require let  RaftMessageKind::RequestVoteResponse {  vote_granted } = m.kind;
                 let (src, dest, term)= (m.src,m.dest,m.term);
 
-                have current_term >= [dest as nat =>  let my_current_term  ];
+                have current_term >= [dest =>  let my_current_term  ];
 
                 // \* This tallies votes even when the current state is not Candidate, but
                 // \* they won't be looked at, so it doesn't matter.
@@ -837,30 +837,30 @@ tokenized_state_machine!{
 
                 // /\ votesResponded' = [votesResponded EXCEPT ![i] =
                 //                           votesResponded[i] \cup {j}]
-                remove votes_responded -= [dest as nat=> let dest_votes_responded];
-                add votes_responded += [ dest as nat=> (dest_votes_responded.insert(src as nat))];
+                remove votes_responded -= [dest=> let dest_votes_responded];
+                add votes_responded += [ dest=> (dest_votes_responded.insert(src))];
 
                 // /\ \/ /\ m.mvoteGranted
                 //       /\ votesGranted' = [votesGranted EXCEPT ![i] =
                 //                               votesGranted[i] \cup {j}]
-                remove votes_granted -= [dest as nat => let mut dest_votes_granted];
+                remove votes_granted -= [dest => let mut dest_votes_granted];
                 let new_dest_votes_granted =  match vote_granted {
-                    true => {dest_votes_granted.insert(src as nat)}
+                    true => {dest_votes_granted.insert(src)}
                     false => {dest_votes_granted}
                 };
-                add votes_granted += [dest as nat => new_dest_votes_granted ];
+                add votes_granted += [dest => new_dest_votes_granted ];
 
                 //       /\ voterLog' = [voterLog EXCEPT ![i] =
                 //                           voterLog[i] @@ (j :> m.mlog)]
                 //    \/ /\ ~m.mvoteGranted
                 //       /\ UNCHANGED <<votesGranted, voterLog>>
-                remove voter_log -= [dest as nat => let mut dest_voter_log];
+                remove voter_log -= [dest => let mut dest_voter_log];
                 let new_dest_voter_log =  match vote_granted {
                     // TODO: need to add message mlog
-                    true => {dest_voter_log.insert(src as nat,Seq::empty() )}
+                    true => {dest_voter_log.insert(src,Seq::empty() )}
                     false => {dest_voter_log}
                 };
-                add voter_log += [dest as nat => new_dest_voter_log ];
+                add voter_log += [dest => new_dest_voter_log ];
 
                 // /\ UNCHANGED <<serverVars, votedFor, leaderVars, logVars>>
             }
