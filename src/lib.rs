@@ -163,8 +163,7 @@ pub struct ElectionRecord {
 
 pub struct LogEntry {
     pub term: nat,
-    // the proof is not concerned with the actual values inside the log
-    pub item: (),
+    pub item: bool,
 }
 pub enum RaftMessageKind{
     pub AppendEntriesRequest {
@@ -384,17 +383,8 @@ tokenized_state_machine!{
         #[invariant]
         pub fn quorum_properties(&self) -> bool { 
             forall |i:Set<nat>|
-                #[trigger]i.finite() &&
-                #[trigger]i.subset_of(self.servers) &&
-                #[trigger]i.len() > self.servers.len()/2
-                ==> self.quorum.contains(i)
-        }
-
-        #[invariant]
-        pub fn quorum_properties_2(&self) -> bool { 
-            forall |i:Set<nat>|
                 #[trigger]self.quorum.contains(i)
-                ==> 
+                <==> 
                     i.finite() &&
                     i.subset_of(self.servers) &&
                     i.len() > self.servers.len()/2
@@ -781,21 +771,20 @@ tokenized_state_machine!{
             if vote_granted{
                 let pre_votes = pre.votes_granted.get(m.dest).unwrap();
                 let post_votes = post.votes_granted.get(m.dest).unwrap();
-                assert(
-                    // expands trigger of invariant message_correctness 
-                    pre.messages.contains(m)
-                    // ==> servers.contains(m.src) ==> (2)
+                // if we already have the quorum adding another vote still remains in the quorum
+                if(pre.quorum.contains(pre_votes)){
+                    assert(
+                        // quorum_properties ==>
+                        &&  pre_votes.len() > pre.servers.len()/2 
+                        // ==> (3)
 
-                    && pre.quorum.contains(pre_votes) ==> pre_votes.len() > pre.servers.len()/2 
-                    // ==> (3)
-
-                    // verus can then infer that post_votes == pre_votes.insert(m.src) 
-
-                    && post_votes.finite()                      // (1)
-                    && post_votes.subset_of(pre.servers)        // (2)
-                    && post_votes.len() > pre.servers.len() / 2 // (3)
-                    // ==> quorum.contains(post_votes)
-                ); // ==> leader_has_quorum
+                        // post_votes == pre_votes.insert(m.src) ==>
+                        && post_votes.finite()                      // (1)
+                        && post_votes.subset_of(pre.servers)        // (2)
+                        && post_votes.len() > pre.servers.len() / 2 // (3)
+                        // quorum_properties ==> quorum.contains(post_votes)
+                    ); // ==> leader_has_quorum
+                }
 
                 // the vote has been granted so we know that post.votes_granted.get(m.dest) == pre.votes_granted.get(m.dest).insert(m.src)
                 assert forall |j:nat|
@@ -808,8 +797,9 @@ tokenized_state_machine!{
                     implies !post.votes_granted.get(j).unwrap().contains(m.src) 
                 by{
                     if(post.votes_granted.get(j).unwrap().contains(m.src)){
-                        // this means that using votes_granted_comes_from_message we can build its
-                        // corresponding message and assert that it is contanined in messages
+                        // we can build the message for the vote above and confirm it is contained in messages
+
+                        // votes_granted_comes_from_message ==>
                         let m2 =RaftMessage{
                             src:m.src,
                             dest:j,
@@ -819,9 +809,8 @@ tokenized_state_machine!{
                         assert(m2.term == post.current_term.get(m2.dest).unwrap());
                         assert(post.messages.contains(m2));
 
-                        // we also know about the message m we just received, which also now has
-                        // been inserted in votes granted
-                        assert( post.votes_granted.get(m.dest).unwrap().contains(m.src));
+                        // but the message we just received also comes from messages
+                        assert(post.messages.contains(m));
                         
                         // and here we arrive at the contradiction, vote_once_per_term says that
                         // there cannot be two messages that grant a vote with same src and term but
@@ -877,32 +866,28 @@ tokenized_state_machine!{
             }
         }
 
+        #[inductive(client_request)]
+        fn client_request_inductive(pre: Self, post: Self, i: nat, v: bool) { }
 
+        transition!{
+            client_request(i:nat, v:bool){
+                have current_term >= [i => let term];
 
+                // /\ state[i] = Leader
+                have state >= [i => ServerState::Leader];
 
-        // transition!{
-        //     client_request(){
-        //         // remove messages -= [ msg_id => let  RaftMessage::ClientRequest{dest,value}];
-        //         remove messages -= set { m };
-        //         require let  RaftMessage::ClientRequest{dest,value} = m;
-        //
-        //         have current_term >= [dest as nat => let term];
-        //
-        //         // /\ state[i] = Leader
-        //         have state >= [dest as nat => ServerState::Leader];
-        //
-        //         // /\ LET entry == [term  |-> currentTerm[i],
-        //         //                  value |-> v]
-        //         //        newLog == Append(log[i], entry)
-        //         //    IN  log' = [log EXCEPT ![i] = newLog]
-        //         remove log -= [dest as nat =>  let current_log  ];
-        //         add log += [dest as nat => { current_log.push(LogEntry::{term : term as nat ,item:value}) }];
-        //
-        //         // /\ UNCHANGED <<messages, serverVars, candidateVars,
-        //         //                leaderVars, commitIndex>>
-        //     }
-        // }
-        //
+                // /\ LET entry == [term  |-> currentTerm[i],
+                //                  value |-> v]
+                //        newLog == Append(log[i], entry)
+                //    IN  log' = [log EXCEPT ![i] = newLog]
+                remove log -= [i =>  let current_log  ];
+                add log += [i => { current_log.push(LogEntry{term,item:v}) }];
+
+                // /\ UNCHANGED <<messages, serverVars, candidateVars,
+                //                leaderVars, commitIndex>>
+            }
+        }
+
     }
 }
 
