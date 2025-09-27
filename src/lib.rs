@@ -347,11 +347,6 @@ tokenized_state_machine!{
         }
 
         #[invariant]
-        pub fn servers_finite(&self) -> bool { 
-            self.servers.finite()
-        }
-
-        #[invariant]
         pub fn votes_granted(&self) -> bool { 
             forall |i: nat|
                 #[trigger]self.votes_granted.contains_key(i)
@@ -375,28 +370,6 @@ tokenized_state_machine!{
                 #[trigger]self.current_term.get(i).unwrap() == #[trigger]self.current_term.get(j).unwrap()
                 ==> self.votes_granted.get(i).unwrap().disjoint(self.votes_granted.get(j).unwrap()) 
         }
-
-        // #[invariant]
-        // pub fn votes_granted_disjoint(&self) -> bool { 
-        //     forall |i:nat,j:nat|
-        //         i != j &&
-        //         !self.votes_granted.get(i).unwrap().is_empty() &&
-        //         !self.votes_granted.get(j).unwrap().is_empty() &&
-        //         self.current_term.contains_key(i) &&
-        //         self.current_term.contains_key(j) &&
-        //         self.current_term.get(i) == self.current_term.get(j)
-        //         ==> !#[trigger](self.votes_granted.get(i).unwrap().disjoint(self.votes_granted.get(j).unwrap()))
-        // }
-
-        // // only one leader can be elected per term
-        // #[invariant]
-        // pub fn election_safety_v2(&self) -> bool { 
-        //     forall |r1: ElectionRecord, r2:ElectionRecord| 
-        //             r1.leader != r2.leader &&
-        //             self.elections.contains_value(r1) &&
-        //             self.elections.contains_value(r2) 
-        //             ==> #[trigger] r1.term != #[trigger] r2.term
-        // }
 
         #[invariant]
         pub fn quorum_intersects(&self) -> bool { 
@@ -449,18 +422,13 @@ tokenized_state_machine!{
                     assert(i.union(j).len() > post.servers.len());
                 }
             }// ==> quorum_intersects
-
-            
-
-
         }
 
         init!{
+            // TODO: have as input a real set and convert it to set of nat
             initialize(servers: Set<nat>)
             {
                 require(servers.finite());
-                require(servers.len() > 1);
-                // require(servers.len() < 10);
 
                 init servers = servers;
                 init quorum = Set::new(|s: Set<nat>|   
@@ -484,10 +452,9 @@ tokenized_state_machine!{
 
         #[inductive(restart)]
         fn restart_inductive(pre: Self, post: Self, i: nat) { 
-            // leader_has_quorum
             assert forall |j:nat|
                 i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
-            by{};
+            by{}; // ==> leader_has_quorum
         }
 
         transition!{
@@ -526,10 +493,6 @@ tokenized_state_machine!{
                 ==> post.state.get(j) == Some(ServerState::Leader) &&
                     pre.current_term.get(j) ==  post.current_term.get(j)
             ); // ==> election_safety
-
-            assert forall |j:nat|
-                i != j implies pre.votes_granted.get(j)  =~= post.votes_granted.get(j)
-            by{} // ==> leader_has_quorum
         }
 
         transition!{
@@ -565,13 +528,7 @@ tokenized_state_machine!{
         }
 
         #[inductive(request_vote)]
-        fn request_vote_inductive(pre: Self, post: Self, i:nat,j:nat) {
-            // message_correctness
-            assert forall |k: RaftMessage|
-                #[trigger]post.messages.contains(k) implies 
-                pre.messages.contains(k) || (k.src == i && k.dest ==j) 
-            by{}
-        }
+        fn request_vote_inductive(pre: Self, post: Self, i:nat,j:nat) {}
 
         transition!{
             request_vote(i:nat,j:nat){
@@ -608,51 +565,29 @@ tokenized_state_machine!{
 
         #[inductive(become_leader)]
         fn become_leader_inductive(pre: Self, post: Self, i:nat) {
+            // in the post state i becomes leader, we show that it is able to become leader safely
+            // by checking that there were no other leaders in its term already
             assert forall | j: nat| 
-                    i != j &&
-                    pre.state.get(j) == Some(ServerState::Leader) 
-                    // pre.state.get(y) == Some(ServerState::Leader)
-                    implies #[trigger] pre.current_term.get(i) != #[trigger] pre.current_term.get(j) 
+                i != j &&
+                pre.state.get(j) == Some(ServerState::Leader) 
+                implies pre.current_term.get(i) != pre.current_term.get(j) 
             by{
-
-                let vgi = pre.votes_granted.get(i).unwrap();
-                let vgj = pre.votes_granted.get(j).unwrap();
-
-
-
-
                 if(post.current_term.get(i).unwrap() == post.current_term.get(j).unwrap()){
+                    let vgi = pre.votes_granted.get(i).unwrap();
+                    let vgj = pre.votes_granted.get(j).unwrap();
 
-                    assert( post.votes_granted.contains_key(i));
-                    assert( post.votes_granted.contains_key(i));
-                    assert(vgi.disjoint(vgj));
+                    // vgranted_disjoint ==>
                     assert(!vgj.contains(vgi.choose()));
-                    // assert(post.current_term.get(i).unwrap() != post.current_term.get(j).unwrap());
+                    assert(vgi.disjoint(vgj));
 
-                    // - a leader (j) still has its votes_granted, and we know its term
-                    // - j's votes_granted must be in the quorum for it to have become leader
-                    // this leverages the invariant leader_has_quorum
+                    // leader_has_quorum ==>
                     assert(post.quorum.contains(vgj));
-                    // - but then we also know that the votes for i are in the quorum
                     assert(post.quorum.contains(vgi));
-                    // - for the same term we cannot have two nodes with vgranted in quorum because:
-                    assert(vgi != vgj);
+
+                    // quorum_intersects ==>
                     assert(!vgi.disjoint(vgj));
-
-                    // i != j &&
-                    // self.quorum.contains(i) &&
-                    // self.quorum.contains(j) 
-                    // ==> !#[trigger]i.disjoint(j)
                 }
-                //      - for the same term vgranted must be disjoint between each node
-                //      - if vgrantedi and vgrantedj are disjoint then they cannot both be in
-                //      quorum
-                //  - this means that their terms are different (do this by assuming the terms are
-                //  equal and arrive to a contradiction
-
-
-
-            }
+            } // ==> election_safety
         }
 
         transition!{
@@ -741,17 +676,14 @@ tokenized_state_machine!{
         
         #[inductive(update_term)]
         fn update_term_inductive(pre: Self, post: Self, i: nat, m: RaftMessage) {
-            // just enough to make verus understand that the rest of current_term is not affected,
-            // knowing that ServerState of i becomes follower it is able to finish the proof automatically
+            // knowing that post.state(i) == ServerState::Follower verus can finish the proof
             assert forall |x: nat| 
                 x != i implies pre.current_term.get(x) == post.current_term.get(x)   
-            by{};
+            by{}; // ==> election_safety
         }
 
         transition!{
-            // the update_term transition is triggered when *any* message arrives with a more
-            // recent term. The message is not discarded so that it can be handled by the other
-            // functions
+            // ensures term gets updated before running any of the other message handlers
             update_term(i:nat,m:RaftMessage){
                 remove current_term -= [i => let i_term  ];
 
@@ -779,14 +711,7 @@ tokenized_state_machine!{
         }
 
         #[inductive(handle_request_vote_request)]
-        fn handle_request_vote_request_inductive(pre: Self, post: Self, request:RaftMessage) {
-            assert(pre.messages.contains(request));
-            assert forall |m: RaftMessage|
-                #[trigger]post.messages.contains(m) 
-                implies pre.messages.contains(m) || 
-                        (request.src == m.dest && request.dest ==m.src) 
-            by{}// ==> message_correctness
-        }
+        fn handle_request_vote_request_inductive(pre: Self, post: Self, request:RaftMessage) {}
 
         transition!{
             handle_request_vote_request(request:RaftMessage){
@@ -978,18 +903,6 @@ tokenized_state_machine!{
         //     }
         // }
         //
-
-        // transition!{
-        //     duplicate_message(m:RaftMessage){
-        //
-        //     }
-        // }
-        //
-        // transition!{
-        //     drop_message(m:RaftMessage){
-        //
-        //     }
-        // }
     }
 }
 
